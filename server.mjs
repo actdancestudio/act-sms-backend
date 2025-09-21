@@ -1,57 +1,69 @@
 import 'dotenv/config';
-import express from "express";
-import cors from "cors";
-import bodyParser from "body-parser";
-import twilio from "twilio";
+import express from 'express';
+import cors from 'cors';
+import bodyParser from 'body-parser';
+import twilio from 'twilio';
 
 // ======== ENV VARS ========
 const {
-  PORT = 3001,
-  FRONTEND_ORIGIN = "http://localhost:5173", // your ACT Lighthouse dev origin
-  DEV_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173",
+  PORT = process.env.PORT || 3001,
+  FRONTEND_ORIGIN = 'http://localhost:5173',
+  DEV_ORIGINS = 'http://localhost:5173,http://127.0.0.1:5173',
   TWILIO_ACCOUNT_SID,
   TWILIO_AUTH_TOKEN,
-  TWILIO_PHONE_NUMBER, // your Twilio number (must be SMS capable)
+  TWILIO_PHONE_NUMBER,
 } = process.env;
 
 // ======== EXPRESS APP ========
 const app = express();
+
+// Twilio sends x-www-form-urlencoded — this is REQUIRED for webhooks
+app.use(bodyParser.urlencoded({ extended: false }));
+// JSON for your own API calls
 app.use(bodyParser.json());
 
-// ======== CORS CONFIG ========
+// ======== CORS CONFIG (safe allowlist for your frontend) ========
 const allowList = new Set(
-  [FRONTEND_ORIGIN, ...DEV_ORIGINS.split(",")]
-    .map((s) => s.trim())
-    .filter(Boolean)
+  [FRONTEND_ORIGIN, ...DEV_ORIGINS.split(',')].map((s) => s.trim()).filter(Boolean)
 );
-
-const corsOptions = {
-  origin(origin, cb) {
-    if (!origin) return cb(null, true); // allow curl/postman
-    if (allowList.has(origin)) return cb(null, true);
-    console.warn("🚫 CORS blocked Origin:", origin);
-    return cb(new Error("Not allowed by CORS"));
-  },
-  credentials: true,
-};
-
-app.use(cors(corsOptions));
+app.use(
+  cors({
+    origin(origin, cb) {
+      if (!origin) return cb(null, true); // allow curl/postman/Twilio
+      if (allowList.has(origin)) return cb(null, true);
+      console.warn('🚫 CORS blocked Origin:', origin);
+      return cb(new Error('Not allowed by CORS'));
+    },
+    credentials: true,
+  })
+);
 
 // ======== TWILIO CLIENT ========
 const client = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
+const { MessagingResponse } = twilio.twiml;
 
 // ======== ROUTES ========
 
-// Health check
-app.get("/api/health", (req, res) => {
-  res.json({ ok: true, message: "Server running ✅" });
+// Root + health
+app.get('/', (_req, res) => res.send('ACT SMS backend is running'));
+app.get('/api/health', (_req, res) => res.json({ ok: true, message: 'Server running ✅' }));
+
+// Incoming SMS webhook (Twilio -> your server)
+app.post('/sms', (req, res) => {
+  // Optional: log incoming details
+  // console.log('From:', req.body.From, 'Body:', req.body.Body);
+
+  const twiml = new MessagingResponse();
+  twiml.message("Thanks for texting ACT Dance! We’ll get back to you shortly.");
+
+  res.type('text/xml').send(twiml.toString());
 });
 
-// Send SMS
-app.post("/api/sms/send", async (req, res) => {
+// Outgoing SMS (your app -> Twilio -> user)
+app.post('/api/sms/send', async (req, res) => {
   try {
     const { to, body } = req.body;
-    if (!to || !body) return res.status(400).json({ ok: false, error: "Missing to/body" });
+    if (!to || !body) return res.status(400).json({ ok: false, error: 'Missing to/body' });
 
     const message = await client.messages.create({
       from: TWILIO_PHONE_NUMBER,
@@ -61,7 +73,7 @@ app.post("/api/sms/send", async (req, res) => {
 
     res.json({ ok: true, sid: message.sid, status: message.status });
   } catch (err) {
-    console.error("❌ SMS send error:", err);
+    console.error('❌ SMS send error:', err);
     res.status(500).json({ ok: false, error: err.message });
   }
 });
