@@ -19,6 +19,16 @@ const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 // JSON for your own API calls
 app.use(bodyParser.json());
+// --- Quick CORS fix to satisfy browser preflight ---
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin) res.setHeader('Access-Control-Allow-Origin', origin);
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  if (req.method === 'OPTIONS') return res.sendStatus(204); // short-circuit preflight
+  next();
+});
 
 // ======== CORS CONFIG ========
 const allowList = new Set(
