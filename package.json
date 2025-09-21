@@ -1,0 +1,20 @@
+﻿{
+  "name": "act-sms-backend",
+  "version": "1.0.0",
+  "description": "ACT Lighthouse SMS backend",
+  "type": "module",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs",
+    "dev": "node server.mjs"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "twilio": "^5.10.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
