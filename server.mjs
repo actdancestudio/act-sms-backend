@@ -16,13 +16,9 @@ const {
 
 // ======== EXPRESS APP ========
 const app = express();
-
-// Twilio webhooks send x-www-form-urlencoded
-app.use(bodyParser.urlencoded({ extended: false }));
-// JSON for your own API calls
 app.use(bodyParser.json());
 
-// ======== CORS CONFIG ========
+// ======== CORS CONFIG (safe allowlist for your frontend) ========
 const allowList = new Set(
   [FRONTEND_ORIGIN, ...DEV_ORIGINS.split(',')].map((s) => s.trim()).filter(Boolean)
 );
@@ -48,15 +44,8 @@ const { MessagingResponse } = twilio.twiml;
 app.get('/', (_req, res) => res.send('ACT SMS backend is running'));
 app.get('/api/health', (_req, res) => res.json({ ok: true, message: 'Server running ✅' }));
 
-// Incoming SMS webhook
-app.post('/sms', (req, res) => {
-  const twiml = new MessagingResponse();
-  twiml.message("Thanks for texting ACT Dance! We’ll get back to you shortly.");
-  res.type('text/xml').send(twiml.toString());
-});
-
-// Outgoing SMS
-app.post('/api/sms/send', async (req, res) => {
+// Send SMS
+app.post("/api/sms/send", async (req, res) => {
   try {
     const { to, body } = req.body;
     if (!to || !body) return res.status(400).json({ ok: false, error: 'Missing to/body' });
