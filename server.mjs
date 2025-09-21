@@ -30,11 +30,10 @@ app.use((req, res, next) => {
   next();
 });
 
-// ======== CORS CONFIG ========
-const allowList = new Set(
-  [FRONTEND_ORIGIN, ...DEV_ORIGINS.split(',')].map((s) => s.trim()).filter(Boolean)
-);
-app.use(
+// ======== CORS CONFIG (simplified) ========
+app.use(cors({ origin: true, credentials: true }));
+app.options('*', cors({ origin: true, credentials: true }));
+
   cors({
     origin(origin, cb) {
       if (!origin) return cb(null, true); // allow curl/postman/Twilio
