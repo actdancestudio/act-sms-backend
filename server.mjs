@@ -13,6 +13,12 @@ const app = express();
 app.use(bodyParser.urlencoded({ extended: false })); // Twilio webhooks
 app.use(bodyParser.json());                          // Your API JSON
 
+// Log every request (method + path) to Render logs
+app.use((req, _res, next) => {
+  console.log(`${req.method} ${req.path}`);
+  next();
+});
+
 // Permissive CORS (works for Lighthouse + Twilio)
 app.use(cors({ origin: true, credentials: true }));
 app.options('*', cors({ origin: true, credentials: true }));
