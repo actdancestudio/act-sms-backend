@@ -311,6 +311,11 @@ app.post('/api/sms/send', async (req, res) => {
     res.status(500).json({ ok: false, error: err.message || 'SMS send failed' });
   }
 });
+// Are we connected to Google?
+app.get('/api/gcal/status', (_req, res) => {
+  const connected = !!(globalThis.gTokens?.access_token || globalThis.gTokens?.refresh_token);
+  res.json({ connected });
+});
 
 /* ========== START ========== */
 app.listen(PORT, () => {
