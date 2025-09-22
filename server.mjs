@@ -15,12 +15,27 @@ const {
   TWILIO_PHONE_NUMBER,
 } = process.env;
 
-// CORS allow-list
-const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || '';
-const DEV_ORIGINS = (process.env.DEV_ORIGINS || '')
-  .split(',')
-  .map((s) => s.trim())
-  .filter(Boolean);
+// CORS allow-list + regex for Base44 previews
+const corsAllowList = new Set([FRONTEND_ORIGIN, ...DEV_ORIGINS].filter(Boolean));
+const corsAllowRegexes = [
+  /^https:\/\/([a-z0-9-]+\.)*base44\.app$/i,        // any *.base44.app
+  /^https:\/\/(www\.)?lighthouse\.actdance\.ca$/i,  // your app domains
+];
+
+app.use(
+  cors({
+    origin(origin, cb) {
+      if (!origin) return cb(null, true); // curl/postman/Twilio
+      if (corsAllowList.has(origin)) return cb(null, true);
+      if (corsAllowRegexes.some(re => re.test(origin))) return cb(null, true);
+      console.warn('🚫 CORS blocked Origin:', origin);
+      cb(new Error('Not allowed by CORS'));
+    },
+    credentials: true,
+  })
+);
+app.options('*', cors());
+
 
 // Google OAuth (Calendar)
 const {
