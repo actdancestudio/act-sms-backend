@@ -31,20 +31,6 @@ const { MessagingResponse } = twilio.twiml;
 app.get('/', (_req, res) => res.send('ACT SMS backend is running'));
 app.get('/api/health', (_req, res) => res.json({ ok: true, message: 'Server running ✅' }));
 
-// Start OAuth: hit this in the browser
-app.get('/oauth2/auth', (req, res) => {
-  const url = oauth2Client.generateAuthUrl({
-    access_type: 'offline',
-    prompt: 'consent',
-    scope: [
-      'https://www.googleapis.com/auth/calendar.events',
-      'https://www.googleapis.com/auth/calendar.readonly'
-    ],
-  });
-  res.redirect(url);
-});
-
-
     const start = new Date(Date.now() + 60 * 60 * 1000);
     const end = new Date(start.getTime() + 30 * 60 * 1000);
 
