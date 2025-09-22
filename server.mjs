@@ -15,23 +15,44 @@ const {
   TWILIO_PHONE_NUMBER,
 } = process.env;
 
-// ==== CORS (self-contained) ====
+// Google OAuth / Calendar
+const {
+  GOOGLE_CLIENT_ID,
+  GOOGLE_CLIENT_SECRET,
+  GOOGLE_REDIRECT_URI,             // e.g. https://lighthouse.actdance.ca/oauth2/callback
+  GCAL_CALENDAR_ID = 'primary',    // default calendar when none is passed
+} = process.env;
+
+/* ========== APP ========== */
+const app = express();
+app.use(express.urlencoded({ extended: false })); // for Twilio webhooks
+app.use(express.json());                          // for JSON APIs
+
+// Simple request logger
+app.use((req, _res, next) => {
+  console.log(`${req.method} ${req.path}`);
+  next();
+});
+
+/* ========== CORS (keep single block) ========== */
 // Safe defaults if envs aren't set yet:
 const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || 'https://www.lighthouse.actdance.ca';
-const DEV_ORIGINS_RAW = process.env.DEV_ORIGINS || 'https://lighthouse.actdance.ca';
-const DEV_ORIGINS = DEV_ORIGINS_RAW.split(',').map(s => s.trim()).filter(Boolean);
+const DEV_ORIGINS = (process.env.DEV_ORIGINS || 'https://lighthouse.actdance.ca')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
 
-const corsAllowList = new Set([FRONTEND_ORIGIN, ...DEV_ORIGINS].filter(Boolean));
+const corsAllowList = new Set([FRONTEND_ORIGIN, ...DEV_ORIGINS]);
 const corsAllowRegexes = [
-  /^https:\/\/([a-z0-9-]+\.)*base44\.app$/i,        // any *.base44.app (previews)
+  /^https:\/\/([a-z0-9-]+\.)*base44\.app$/i,        // any *.base44.app (preview/prod)
   /^https:\/\/(www\.)?lighthouse\.actdance\.ca$/i,  // your app domains
 ];
 
 app.use(cors({
   origin(origin, cb) {
-    if (!origin) return cb(null, true);                   // curl/postman/Twilio
-    if (corsAllowList.has(origin)) return cb(null, true); // exact allow-list
-    if (corsAllowRegexes.some(re => re.test(origin))) return cb(null, true); // regex allow
+    if (!origin) return cb(null, true); // allow curl/postman/Twilio
+    if (corsAllowList.has(origin)) return cb(null, true);
+    if (corsAllowRegexes.some(re => re.test(origin))) return cb(null, true);
     console.warn('🚫 CORS blocked Origin:', origin);
     cb(new Error('Not allowed by CORS'));
   },
@@ -39,62 +60,26 @@ app.use(cors({
 }));
 app.options('*', cors());
 
-
-
-// Google OAuth (Calendar)
-const {
-  GOOGLE_CLIENT_ID,
-  GOOGLE_CLIENT_SECRET,
-  GOOGLE_REDIRECT_URI, // e.g. https://lighthouse.actdance.ca/oauth2/callback
-  GCAL_CALENDAR_ID = 'primary',
-} = process.env;
-
-/* ========== APP ========== */
-const app = express();
-app.use(express.urlencoded({ extended: false })); // Twilio webhooks
-app.use(express.json());                           // JSON APIs
-
-// Simple logger
-app.use((req, _res, next) => {
-  console.log(`${req.method} ${req.path}`);
-  next();
-});
-
-// CORS allow-list (safe defaults)
-const allowList = new Set([FRONTEND_ORIGIN, ...DEV_ORIGINS].filter(Boolean));
-app.use(
-  cors({
-    origin(origin, cb) {
-      if (!origin) return cb(null, true);                // allow curl/postman/Twilio
-      if (allowList.size === 0) return cb(null, true);   // no list => allow all
-      if (allowList.has(origin)) return cb(null, true);
-      console.warn('🚫 CORS blocked Origin:', origin);
-      return cb(new Error('Not allowed by CORS'));
-    },
-    credentials: true,
-  })
-);
-app.options('*', cors());
-
 /* ========== TWILIO ========== */
 const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 const { MessagingResponse } = twilio.twiml;
 
-/* ========== GOOGLE OAUTH ========== */
+/* ========== GOOGLE OAUTH ==========
+   Full R/W Calendar scope; tokens stored in memory (replace with DB later)
+==================================== */
 const oauth2Client = new google.auth.OAuth2(
   GOOGLE_CLIENT_ID,
   GOOGLE_CLIENT_SECRET,
   GOOGLE_REDIRECT_URI
 );
 
-// In-memory token store (swap for DB in production)
+// In-memory tokens (persist to DB in production)
 let gTokens = null;
 
-// Keep refreshed tokens in memory as Google rotates them
+// Keep refreshed tokens as Google rotates them
 oauth2Client.on('tokens', (t) => {
   gTokens = { ...(gTokens || {}), ...t };
 });
-globalThis.gTokens = gTokens; // after you declare gTokens
 
 /* ========== ROUTES ========== */
 
@@ -117,7 +102,7 @@ app.get('/oauth2/auth', (_req, res) => {
     const url = oauth2Client.generateAuthUrl({
       access_type: 'offline',
       prompt: 'consent',
-      scope: ['https://www.googleapis.com/auth/calendar'], // full R/W
+      scope: ['https://www.googleapis.com/auth/calendar'], // full read/write
     });
     res.redirect(url);
   } catch (e) {
@@ -131,11 +116,9 @@ app.get('/oauth2/callback', async (req, res) => {
   try {
     const code = req.query.code;
     if (!code) return res.status(400).send('No code provided');
-
     const { tokens } = await oauth2Client.getToken(code);
     oauth2Client.setCredentials(tokens);
-    gTokens = tokens; // keep for subsequent calls (persist in DB for production)
-
+    gTokens = tokens; // keep for subsequent calls
     res.send('Google Calendar connected ✔️ You can close this tab.');
   } catch (err) {
     console.error('OAuth callback error:', err?.response?.data || err);
@@ -143,9 +126,13 @@ app.get('/oauth2/callback', async (req, res) => {
   }
 });
 
-/* ========== GOOGLE CALENDAR HELPERS & ENDPOINTS ========== */
+// Connection status (optional helper for your Settings page)
+app.get('/api/gcal/status', (_req, res) => {
+  const connected = !!(gTokens?.access_token || gTokens?.refresh_token);
+  res.json({ connected });
+});
 
-// Build authed Calendar client
+/* ========== GOOGLE CALENDAR HELPERS & ENDPOINTS ========== */
 function authedCalendar() {
   if (!gTokens?.access_token && !gTokens?.refresh_token) {
     const err = new Error('Google not connected. Visit /oauth2/auth first.');
@@ -156,7 +143,7 @@ function authedCalendar() {
   return google.calendar({ version: 'v3', auth: oauth2Client });
 }
 
-// List calendars (choose non-primary, etc.)
+// List calendars (to choose non-primary if needed)
 app.get('/api/gcal/calendars', async (_req, res) => {
   try {
     const calendar = authedCalendar();
@@ -185,7 +172,7 @@ app.get('/api/gcal/events', async (req, res) => {
       calendarId,
       maxResults: Number(maxResults),
       singleEvents: true,
-      showDeleted: showDeleted === 'true',
+      showDeleted: String(showDeleted) === 'true',
       pageToken,
       orderBy: 'startTime',
     };
@@ -228,7 +215,7 @@ app.post('/api/gcal/events', async (req, res) => {
       reminders,
       colorId,
       extendedProperties, // { private: { lighthouseId, studentId, type } }
-      conferenceData,     // { createRequest: { requestId } } to create Google Meet
+      conferenceData,     // { createRequest: { requestId } } to create Meet
       transparency = 'opaque',
       visibility = 'default',
     } = req.body || {};
@@ -255,6 +242,7 @@ app.post('/api/gcal/events', async (req, res) => {
 
     res.status(201).json(data);
   } catch (e) {
+    console.error('Create event error:', e?.response?.data || e);
     res.status(500).json({ error: e.message || 'Failed to create event' });
   }
 });
@@ -276,6 +264,7 @@ app.patch('/api/gcal/events/:eventId', async (req, res) => {
 
     res.json(data);
   } catch (e) {
+    console.error('Update event error:', e?.response?.data || e);
     res.status(500).json({ error: e.message || 'Failed to update event' });
   }
 });
@@ -295,12 +284,12 @@ app.delete('/api/gcal/events/:eventId', async (req, res) => {
 
     res.json({ ok: true, deleted: eventId });
   } catch (e) {
+    console.error('Delete event error:', e?.response?.data || e);
     res.status(500).json({ error: e.message || 'Failed to delete event' });
   }
 });
 
 /* ========== TWILIO SMS ENDPOINTS ========== */
-
 // Incoming SMS (Twilio → your server)
 app.post('/sms', (req, res) => {
   try {
@@ -331,13 +320,8 @@ app.post('/api/sms/send', async (req, res) => {
     res.status(500).json({ ok: false, error: err.message || 'SMS send failed' });
   }
 });
-// Are we connected to Google?
-app.get('/api/gcal/status', (_req, res) => {
-  const connected = !!(globalThis.gTokens?.access_token || globalThis.gTokens?.refresh_token);
-  res.json({ connected });
-});
 
 /* ========== START ========== */
 app.listen(PORT, () => {
-  console.log(`✅ ACT SMS server running at http://localhost:${PORT}`);
+  console.log(`✅ ACT SMS server running on ${PORT}`);
 });
