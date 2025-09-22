@@ -3,10 +3,14 @@ import express from 'express';
 import cors from 'cors';
 import bodyParser from 'body-parser';
 import twilio from 'twilio';
+import { google } from 'googleapis'; // <-- ADD THIS
 
 // ======== ENV VARS ========
 const PORT = process.env.PORT || 3001;
 const { TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER } = process.env;
+
+// --- Google OAuth env (make sure these are set in Render) ---
+const { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI } = process.env;
 
 // ======== APP ========
 const app = express();
@@ -31,14 +35,75 @@ const { MessagingResponse } = twilio.twiml;
 app.get('/', (_req, res) => res.send('ACT SMS backend is running'));
 app.get('/api/health', (_req, res) => res.json({ ok: true, message: 'Server running ✅' }));
 
-// Incoming SMS (Twilio -> your server)
+// ---- GOOGLE CALENDAR OAUTH ----
+const oauth2Client = new google.auth.OAuth2(
+  GOOGLE_CLIENT_ID,
+  GOOGLE_CLIENT_SECRET,
+  GOOGLE_REDIRECT_URI // e.g., https://lighthouse.actdance.ca/oauth2/callback
+);
+
+// Start OAuth: hit this in the browser
+app.get('/oauth2/auth', (req, res) => {
+  const url = oauth2Client.generateAuthUrl({
+    access_type: 'offline',
+    prompt: 'consent',
+    scope: [
+      'https://www.googleapis.com/auth/calendar.events',
+      'https://www.googleapis.com/auth/calendar.readonly'
+    ],
+  });
+  res.redirect(url);
+});
+
+// Handle Google redirect
+app.get('/oauth2/callback', async (req, res) => {
+  try {
+    const code = req.query.code;
+    if (!code) return res.status(400).send('No code provided');
+
+    const { tokens } = await oauth2Client.getToken(code);
+    // TODO: persist tokens securely (DB). Keep refresh_token!
+    // e.g., await saveUserTokens(userId, tokens);
+
+    oauth2Client.setCredentials(tokens);
+    res.send('Google Calendar connected ✔️ You can close this tab.');
+  } catch (err) {
+    console.error('OAuth callback error:', err);
+    res.status(500).send('OAuth error');
+  }
+});
+
+// --- OPTIONAL: quick test endpoint to create an event ---
+app.get('/api/calendar/createTest', async (_req, res) => {
+  try {
+    // const tokens = await loadUserTokens(userId);
+    // oauth2Client.setCredentials(tokens);
+    const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+
+    const start = new Date(Date.now() + 60 * 60 * 1000);
+    const end = new Date(start.getTime() + 30 * 60 * 1000);
+
+    const event = {
+      summary: 'ACT Lighthouse Test',
+      start: { dateTime: start.toISOString(), timeZone: 'America/Vancouver' },
+      end:   { dateTime: end.toISOString(),   timeZone: 'America/Vancouver' },
+    };
+
+    const r = await calendar.events.insert({ calendarId: 'primary', requestBody: event });
+    res.json({ ok: true, id: r.data.id });
+  } catch (e) {
+    console.error('Create event error:', e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ---- TWILIO SMS ----
 app.post('/sms', (req, res) => {
   const twiml = new MessagingResponse();
   twiml.message("Thanks for texting ACT Dance! We’ll get back to you shortly.");
   res.type('text/xml').send(twiml.toString());
 });
 
-// Outgoing SMS (your app -> Twilio -> user)
 app.post('/api/sms/send', async (req, res) => {
   try {
     const { to, body } = req.body;
