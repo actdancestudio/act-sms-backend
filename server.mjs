@@ -121,6 +121,13 @@ app.post('/api/sms/send', async (req, res) => {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
+app.get('/oauth2/debug', (_req, res) => {
+  res.json({
+    hasClientId: !!process.env.GOOGLE_CLIENT_ID,
+    hasClientSecret: !!process.env.GOOGLE_CLIENT_SECRET,
+    redirectUri: process.env.GOOGLE_REDIRECT_URI || null
+  });
+});
 
 // ======== START ========
 app.listen(PORT, () => {
