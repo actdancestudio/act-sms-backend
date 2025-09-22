@@ -75,6 +75,7 @@ let gTokens = null;
 oauth2Client.on('tokens', (t) => {
   gTokens = { ...(gTokens || {}), ...t };
 });
+globalThis.gTokens = gTokens; // after you declare gTokens
 
 /* ========== ROUTES ========== */
 
