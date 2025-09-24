@@ -13,9 +13,9 @@ const CONFIG = {
 
   // CORS
   FRONTEND_ORIGIN: process.env.FRONTEND_ORIGIN || 'https://www.lighthouse.actdance.ca',
-  DEV_ORIGINS: (process.env.DEV_ORIGINS || 'https://lighthouse.actdance.ca')
+  DEV_ORIGINS: (process.env.DEV_ORIGINS || 'https://lighthouse.actdance.ca,https://app.base44.com')
     .split(',')
-    .map(s => s.trim())
+    .map((s) => s.trim())
     .filter(Boolean),
 
   // Twilio
@@ -23,18 +23,17 @@ const CONFIG = {
   TWILIO_AUTH_TOKEN: process.env.TWILIO_AUTH_TOKEN,
   TWILIO_PHONE_NUMBER: process.env.TWILIO_PHONE_NUMBER,
 
-  // Alert destination (your personal phone)
+  // Your personal phone to receive alerts
   ALERT_PHONE: process.env.ALERT_PHONE,
 
-  // Optional shared secret for incoming automations/webhooks (Wix → this server)
-  // Set the same string in your Wix Automation "Send Webhook" custom header:
-  //   Header Name: X-Automation-Secret, Value: <the same secret>
+  // Optional: shared secret for incoming automations/webhooks (Wix → this server)
+  // If set, Wix must send it as a header (X-Automation-Secret) OR in the body/query "secret"
   AUTOMATION_SHARED_SECRET: process.env.AUTOMATION_SHARED_SECRET || '',
 
   // Google OAuth / Calendar
   GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID,
   GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET,
-  GOOGLE_REDIRECT_URI: process.env.GOOGLE_REDIRECT_URI,      // e.g. https://lighthouse.actdance.ca/oauth2/callback
+  GOOGLE_REDIRECT_URI: process.env.GOOGLE_REDIRECT_URI, // e.g. https://lighthouse.actdance.ca/oauth2/callback
   GCAL_CALENDAR_ID: process.env.GCAL_CALENDAR_ID || 'primary',
 };
 
@@ -42,11 +41,11 @@ function warnMissingEnv(name) {
   if (!CONFIG[name]) console.warn(`⚠️  Missing env: ${name}`);
 }
 // Required for SMS features
-['TWILIO_ACCOUNT_SID','TWILIO_AUTH_TOKEN','TWILIO_PHONE_NUMBER','ALERT_PHONE'].forEach(warnMissingEnv);
+['TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_PHONE_NUMBER', 'ALERT_PHONE'].forEach(warnMissingEnv);
 // Nice-to-have for securing webhooks
 ['AUTOMATION_SHARED_SECRET'].forEach(warnMissingEnv);
 // Required only if you use Google Calendar sync
-['GOOGLE_CLIENT_ID','GOOGLE_CLIENT_SECRET','GOOGLE_REDIRECT_URI'].forEach(warnMissingEnv);
+['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_REDIRECT_URI'].forEach(warnMissingEnv);
 
 /* ============================================================================
  * APP & MIDDLEWARE
@@ -63,15 +62,15 @@ app.use((req, _res, next) => {
 const corsAllowList = new Set([CONFIG.FRONTEND_ORIGIN, ...CONFIG.DEV_ORIGINS]);
 const corsAllowRegexes = [
   /^https:\/\/([a-z0-9-]+\.)*base44\.com$/i,
-  /^https:\/\/([a-z0-9-]+\.)*base44\.app$/i,           // optional if you use .app previews
-  /^https:\/\/(www\.)?lighthouse\.actdance\.ca$/i,     // your domain
+  /^https:\/\/([a-z0-9-]+\.)*base44\.app$/i, // optional, if you use .app previews
+  /^https:\/\/(www\.)?lighthouse\.actdance\.ca$/i,
 ];
 app.use(
   cors({
     origin(origin, cb) {
       if (!origin) return cb(null, true); // allow curl/postman/Twilio
       if (corsAllowList.has(origin)) return cb(null, true);
-      if (corsAllowRegexes.some(re => re.test(origin))) return cb(null, true);
+      if (corsAllowRegexes.some((re) => re.test(origin))) return cb(null, true);
       console.warn('🚫 CORS blocked Origin:', origin);
       return cb(new Error('Not allowed by CORS'));
     },
@@ -82,7 +81,7 @@ app.options('*', cors());
 
 // Body parsers
 app.use(express.json()); // JSON APIs
-app.use(express.urlencoded({ extended: false })); // for Twilio webhooks & form posts
+app.use(express.urlencoded({ extended: false })); // Twilio webhooks & form posts
 
 /* ============================================================================
  * TWILIO SETUP
@@ -101,7 +100,7 @@ const oauth2Client = new google.auth.OAuth2(
 );
 
 let gTokens = null;
-oauth2Client.on('tokens', t => {
+oauth2Client.on('tokens', (t) => {
   gTokens = { ...(gTokens || {}), ...t };
 });
 
@@ -126,18 +125,14 @@ function assert(condition, message, status = 400) {
   }
 }
 
-function verifyAutomationSecret(req) {
-  if (!CONFIG.AUTOMATION_SHARED_SECRET) return true; // not enforced
-  const incoming = req.header('X-Automation-Secret') || req.header('x-automation-secret');
-  return incoming && incoming === CONFIG.AUTOMATION_SHARED_SECRET;
-}
-// helper to pick body or query (supports JSON body OR ?query=params)
+// Accept payload from JSON body OR query string (?key=value)
 function getPayload(req) {
   return (req.body && Object.keys(req.body).length) ? req.body : req.query;
 }
 
+// Accept secret in header or body/query; if no secret configured, do not enforce
 function verifyAutomationSecret(req) {
-  if (!CONFIG.AUTOMATION_SHARED_SECRET) return true; // not enforced
+  if (!CONFIG.AUTOMATION_SHARED_SECRET) return true;
   const header = req.header('X-Automation-Secret') || req.header('x-automation-secret');
   const src = getPayload(req);
   const bodySecret = src?.secret || src?.automationSecret || src?.X_Automation_Secret;
@@ -153,29 +148,36 @@ app.get('/api/health', (_req, res) => res.json({ ok: true, ts: Date.now() }));
 
 /* ============================================================================
  * WIX → WEBHOOK → SMS ALERT (from your Twilio business number)
+ * - Accepts POST or GET
+ * - Accepts: name OR firstName+lastName, email, phone, formName
+ * - Verifies secret (header or body/query) if configured
  * ==========================================================================*/
-app.post('/hooks/wix/new-lead', async (req, res, next) => {
+app.all('/hooks/wix/new-lead', async (req, res, next) => {
   try {
     assert(verifyAutomationSecret(req), 'Unauthorized webhook', 401);
+    assert(CONFIG.ALERT_PHONE, 'ALERT_PHONE not configured', 500);
 
-    const { name, email, phone, formName } = req.body || {};
-    assert(CONFIG.ALERT_PHONE, 'ALERT_PHONE not configured');
+    const src = getPayload(req) || {};
+    const fullName = (src.name || [src.firstName, src.lastName].filter(Boolean).join(' ')).trim();
+    const email = src.email || '';
+    const phone = src.phone || '';
+    const formName = src.formName || 'Lead Inquiry';
 
     const lines = [
       'New Wix Lead!',
-      `Name: ${name || '—'}`,
+      `Name: ${fullName || '—'}`,
       `Email: ${email || '—'}`,
       `Phone: ${phone || '—'}`,
       formName ? `Form: ${formName}` : null,
     ].filter(Boolean);
 
-    const message = await twilioClient.messages.create({
+    const msg = await twilioClient.messages.create({
       from: CONFIG.TWILIO_PHONE_NUMBER,
       to: CONFIG.ALERT_PHONE,
       body: lines.join('\n'),
     });
 
-    res.json({ ok: true, sid: message.sid, status: message.status });
+    res.json({ ok: true, sid: msg.sid, status: msg.status });
   } catch (err) {
     next(err);
   }
@@ -282,13 +284,10 @@ app.get('/api/gcal/events', async (req, res, next) => {
       showDeleted = false,
     } = req.query;
 
-    const params = {
-      calendarId,
-      maxResults: Number(maxResults),
-    };
+    const params = { calendarId, maxResults: Number(maxResults) };
 
     if (syncToken) {
-      params.syncToken = syncToken;     // incremental sync
+      params.syncToken = syncToken; // incremental sync
     } else {
       params.singleEvents = true;
       params.orderBy = 'startTime';
@@ -305,7 +304,6 @@ app.get('/api/gcal/events', async (req, res, next) => {
       nextSyncToken: data.nextSyncToken || null,
     });
   } catch (err) {
-    // If syncToken expired → 410 Gone
     next(err);
   }
 });
@@ -407,7 +405,6 @@ app.use((req, res) => {
 app.use((err, _req, res, _next) => {
   const status = err.status || err.code || 500;
   const message = err.message || 'Internal Server Error';
-  // Log a concise error with any nested Google/Twilio payload if present
   const detail = err?.response?.data || err?.more || null;
   if (detail) console.error('❌ Error detail:', detail);
   console.error('❌', status, message);
