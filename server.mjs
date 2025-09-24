@@ -5,137 +5,109 @@ import cors from 'cors';
 import twilio from 'twilio';
 import { google } from 'googleapis';
 
-/* ========== ENV ========== */
-const PORT = process.env.PORT || 10000;
+/* ============================================================================
+ * CONFIG
+ * ==========================================================================*/
+const CONFIG = {
+  PORT: Number(process.env.PORT || 10000),
 
-// Twilio
-const {
-  TWILIO_ACCOUNT_SID,
-  TWILIO_AUTH_TOKEN,
-  TWILIO_PHONE_NUMBER,
-} = process.env;
+  // CORS
+  FRONTEND_ORIGIN: process.env.FRONTEND_ORIGIN || 'https://www.lighthouse.actdance.ca',
+  DEV_ORIGINS: (process.env.DEV_ORIGINS || 'https://lighthouse.actdance.ca')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean),
 
-// Google OAuth / Calendar
-const {
-  GOOGLE_CLIENT_ID,
-  GOOGLE_CLIENT_SECRET,
-  GOOGLE_REDIRECT_URI,             // e.g. https://lighthouse.actdance.ca/oauth2/callback
-  GCAL_CALENDAR_ID = 'primary',    // default calendar when none is passed
-} = process.env;
+  // Twilio
+  TWILIO_ACCOUNT_SID: process.env.TWILIO_ACCOUNT_SID,
+  TWILIO_AUTH_TOKEN: process.env.TWILIO_AUTH_TOKEN,
+  TWILIO_PHONE_NUMBER: process.env.TWILIO_PHONE_NUMBER,
 
-/* ========== APP ========== */
+  // Alert destination (your personal phone)
+  ALERT_PHONE: process.env.ALERT_PHONE,
+
+  // Optional shared secret for incoming automations/webhooks (Wix → this server)
+  // Set the same string in your Wix Automation "Send Webhook" custom header:
+  //   Header Name: X-Automation-Secret, Value: <the same secret>
+  AUTOMATION_SHARED_SECRET: process.env.AUTOMATION_SHARED_SECRET || '',
+
+  // Google OAuth / Calendar
+  GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID,
+  GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET,
+  GOOGLE_REDIRECT_URI: process.env.GOOGLE_REDIRECT_URI,      // e.g. https://lighthouse.actdance.ca/oauth2/callback
+  GCAL_CALENDAR_ID: process.env.GCAL_CALENDAR_ID || 'primary',
+};
+
+function warnMissingEnv(name) {
+  if (!CONFIG[name]) console.warn(`⚠️  Missing env: ${name}`);
+}
+// Required for SMS features
+['TWILIO_ACCOUNT_SID','TWILIO_AUTH_TOKEN','TWILIO_PHONE_NUMBER','ALERT_PHONE'].forEach(warnMissingEnv);
+// Nice-to-have for securing webhooks
+['AUTOMATION_SHARED_SECRET'].forEach(warnMissingEnv);
+// Required only if you use Google Calendar sync
+['GOOGLE_CLIENT_ID','GOOGLE_CLIENT_SECRET','GOOGLE_REDIRECT_URI'].forEach(warnMissingEnv);
+
+/* ============================================================================
+ * APP & MIDDLEWARE
+ * ==========================================================================*/
 const app = express();
-app.use(express.urlencoded({ extended: false })); // for Twilio webhooks
-app.use(express.json());                          // for JSON APIs
 
-// Simple request logger
+// Minimal request logger
 app.use((req, _res, next) => {
-  console.log(`${req.method} ${req.path}`);
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
   next();
 });
 
-/* ========== CORS (keep single block) ========== */
-// Safe defaults if envs aren't set yet:
-const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || 'https://www.lighthouse.actdance.ca';
-const DEV_ORIGINS = (process.env.DEV_ORIGINS || 'https://lighthouse.actdance.ca')
-  .split(',')
-  .map(s => s.trim())
-  .filter(Boolean);
-
-const corsAllowList = new Set([FRONTEND_ORIGIN, ...DEV_ORIGINS]);
+// CORS first
+const corsAllowList = new Set([CONFIG.FRONTEND_ORIGIN, ...CONFIG.DEV_ORIGINS]);
 const corsAllowRegexes = [
-  /^https:\/\/([a-z0-9-]+\.)*base44\.app$/i,        // any *.base44.app (preview/prod)
-  /^https:\/\/(www\.)?lighthouse\.actdance\.ca$/i,  // your app domains
+  /^https:\/\/([a-z0-9-]+\.)*base44\.com$/i,
+  /^https:\/\/([a-z0-9-]+\.)*base44\.app$/i,           // optional if you use .app previews
+  /^https:\/\/(www\.)?lighthouse\.actdance\.ca$/i,     // your domain
 ];
-
-app.use(cors({
-  origin(origin, cb) {
-    if (!origin) return cb(null, true); // allow curl/postman/Twilio
-    if (corsAllowList.has(origin)) return cb(null, true);
-    if (corsAllowRegexes.some(re => re.test(origin))) return cb(null, true);
-    console.warn('🚫 CORS blocked Origin:', origin);
-    cb(new Error('Not allowed by CORS'));
-  },
-  credentials: true,
-}));
+app.use(
+  cors({
+    origin(origin, cb) {
+      if (!origin) return cb(null, true); // allow curl/postman/Twilio
+      if (corsAllowList.has(origin)) return cb(null, true);
+      if (corsAllowRegexes.some(re => re.test(origin))) return cb(null, true);
+      console.warn('🚫 CORS blocked Origin:', origin);
+      return cb(new Error('Not allowed by CORS'));
+    },
+    credentials: true,
+  })
+);
 app.options('*', cors());
 
-/* ========== TWILIO ========== */
-const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
+// Body parsers
+app.use(express.json()); // JSON APIs
+app.use(express.urlencoded({ extended: false })); // for Twilio webhooks & form posts
+
+/* ============================================================================
+ * TWILIO SETUP
+ * ==========================================================================*/
+const twilioClient = twilio(CONFIG.TWILIO_ACCOUNT_SID, CONFIG.TWILIO_AUTH_TOKEN);
 const { MessagingResponse } = twilio.twiml;
 
-/* ========== GOOGLE OAUTH ==========
-   Full R/W Calendar scope; tokens stored in memory (replace with DB later)
-==================================== */
+/* ============================================================================
+ * GOOGLE OAUTH / CALENDAR
+ *  - In-memory token store for simplicity (swap for DB when ready)
+ * ==========================================================================*/
 const oauth2Client = new google.auth.OAuth2(
-  GOOGLE_CLIENT_ID,
-  GOOGLE_CLIENT_SECRET,
-  GOOGLE_REDIRECT_URI
+  CONFIG.GOOGLE_CLIENT_ID,
+  CONFIG.GOOGLE_CLIENT_SECRET,
+  CONFIG.GOOGLE_REDIRECT_URI
 );
 
-// In-memory tokens (persist to DB in production)
 let gTokens = null;
-
-// Keep refreshed tokens as Google rotates them
-oauth2Client.on('tokens', (t) => {
+oauth2Client.on('tokens', t => {
   gTokens = { ...(gTokens || {}), ...t };
 });
 
-/* ========== ROUTES ========== */
-
-// Health
-app.get('/', (_req, res) => res.send('ACT SMS backend is running'));
-app.get('/api/health', (_req, res) => res.json({ ok: true, message: 'Server running ✅' }));
-
-// Debug OAuth env presence
-app.get('/oauth2/ping', (_req, res) => {
-  res.json({
-    hasClientId: !!GOOGLE_CLIENT_ID,
-    hasClientSecret: !!GOOGLE_CLIENT_SECRET,
-    redirectUri: GOOGLE_REDIRECT_URI || null,
-  });
-});
-
-// Start Google OAuth
-app.get('/oauth2/auth', (_req, res) => {
-  try {
-    const url = oauth2Client.generateAuthUrl({
-      access_type: 'offline',
-      prompt: 'consent',
-      scope: ['https://www.googleapis.com/auth/calendar'], // full read/write
-    });
-    res.redirect(url);
-  } catch (e) {
-    console.error('Auth URL error:', e);
-    res.status(500).send('Auth URL error');
-  }
-});
-
-// Handle Google callback
-app.get('/oauth2/callback', async (req, res) => {
-  try {
-    const code = req.query.code;
-    if (!code) return res.status(400).send('No code provided');
-    const { tokens } = await oauth2Client.getToken(code);
-    oauth2Client.setCredentials(tokens);
-    gTokens = tokens; // keep for subsequent calls
-    res.send('Google Calendar connected ✔️ You can close this tab.');
-  } catch (err) {
-    console.error('OAuth callback error:', err?.response?.data || err);
-    res.status(500).send('OAuth error');
-  }
-});
-
-// Connection status (optional helper for your Settings page)
-app.get('/api/gcal/status', (_req, res) => {
-  const connected = !!(gTokens?.access_token || gTokens?.refresh_token);
-  res.json({ connected });
-});
-
-/* ========== GOOGLE CALENDAR HELPERS & ENDPOINTS ========== */
-function authedCalendar() {
+function requireGoogle() {
   if (!gTokens?.access_token && !gTokens?.refresh_token) {
-    const err = new Error('Google not connected. Visit /oauth2/auth first.');
+    const err = new Error('Google not connected. Visit /oauth2/auth to connect.');
     err.status = 401;
     throw err;
   }
@@ -143,23 +115,152 @@ function authedCalendar() {
   return google.calendar({ version: 'v3', auth: oauth2Client });
 }
 
-// List calendars (to choose non-primary if needed)
-app.get('/api/gcal/calendars', async (_req, res) => {
+/* ============================================================================
+ * HELPERS
+ * ==========================================================================*/
+function assert(condition, message, status = 400) {
+  if (!condition) {
+    const err = new Error(message);
+    err.status = status;
+    throw err;
+  }
+}
+
+function verifyAutomationSecret(req) {
+  if (!CONFIG.AUTOMATION_SHARED_SECRET) return true; // not enforced
+  const incoming = req.header('X-Automation-Secret') || req.header('x-automation-secret');
+  return incoming && incoming === CONFIG.AUTOMATION_SHARED_SECRET;
+}
+
+/* ============================================================================
+ * BASIC HEALTH
+ * ==========================================================================*/
+app.get('/', (_req, res) => res.send('✅ ACT backend is running'));
+app.get('/api/health', (_req, res) => res.json({ ok: true, ts: Date.now() }));
+
+/* ============================================================================
+ * WIX → WEBHOOK → SMS ALERT (from your Twilio business number)
+ * ==========================================================================*/
+app.post('/hooks/wix/new-lead', async (req, res, next) => {
   try {
-    const calendar = authedCalendar();
-    const { data } = await calendar.calendarList.list();
-    res.json(data.items || []);
-  } catch (e) {
-    res.status(e.status || 500).json({ error: e.message || 'Failed to list calendars' });
+    assert(verifyAutomationSecret(req), 'Unauthorized webhook', 401);
+
+    const { name, email, phone, formName } = req.body || {};
+    assert(CONFIG.ALERT_PHONE, 'ALERT_PHONE not configured');
+
+    const lines = [
+      'New Wix Lead!',
+      `Name: ${name || '—'}`,
+      `Email: ${email || '—'}`,
+      `Phone: ${phone || '—'}`,
+      formName ? `Form: ${formName}` : null,
+    ].filter(Boolean);
+
+    const message = await twilioClient.messages.create({
+      from: CONFIG.TWILIO_PHONE_NUMBER,
+      to: CONFIG.ALERT_PHONE,
+      body: lines.join('\n'),
+    });
+
+    res.json({ ok: true, sid: message.sid, status: message.status });
+  } catch (err) {
+    next(err);
   }
 });
 
-// List events (windowed or incremental via syncToken)
-app.get('/api/gcal/events', async (req, res) => {
+/* ============================================================================
+ * TWILIO SMS
+ * ==========================================================================*/
+// Incoming SMS (Twilio → your server)
+app.post('/sms', (req, res, next) => {
   try {
-    const calendar = authedCalendar();
+    const twiml = new MessagingResponse();
+    twiml.message("Thanks for texting ACT Dance! We’ll get back to you shortly.");
+    res.type('text/xml').send(twiml.toString());
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Outgoing SMS (your app → Twilio → recipient)
+app.post('/api/sms/send', async (req, res, next) => {
+  try {
+    const { to, body } = req.body || {};
+    assert(to && body, 'Missing to/body');
+
+    const msg = await twilioClient.messages.create({
+      from: CONFIG.TWILIO_PHONE_NUMBER,
+      to,
+      body,
+    });
+    res.json({ ok: true, sid: msg.sid, status: msg.status });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* ============================================================================
+ * GOOGLE OAUTH FLOW
+ * ==========================================================================*/
+app.get('/oauth2/ping', (_req, res) => {
+  res.json({
+    hasClientId: !!CONFIG.GOOGLE_CLIENT_ID,
+    hasClientSecret: !!CONFIG.GOOGLE_CLIENT_SECRET,
+    redirectUri: CONFIG.GOOGLE_REDIRECT_URI || null,
+  });
+});
+
+app.get('/oauth2/auth', (_req, res, next) => {
+  try {
+    const url = oauth2Client.generateAuthUrl({
+      access_type: 'offline',
+      prompt: 'consent',
+      scope: ['https://www.googleapis.com/auth/calendar'], // full R/W
+    });
+    res.redirect(url);
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/oauth2/callback', async (req, res, next) => {
+  try {
+    const code = req.query.code;
+    assert(code, 'No code provided');
+
+    const { tokens } = await oauth2Client.getToken(code);
+    oauth2Client.setCredentials(tokens);
+    gTokens = tokens;
+
+    res.send('Google Calendar connected ✔️ You can close this tab.');
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/api/gcal/status', (_req, res) => {
+  const connected = !!(gTokens?.access_token || gTokens?.refresh_token);
+  res.json({ connected });
+});
+
+/* ============================================================================
+ * GOOGLE CALENDAR: LIST / CREATE / UPDATE / DELETE
+ * ==========================================================================*/
+app.get('/api/gcal/calendars', async (_req, res, next) => {
+  try {
+    const calendar = requireGoogle();
+    const { data } = await calendar.calendarList.list();
+    res.json(data.items || []);
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/api/gcal/events', async (req, res, next) => {
+  try {
+    const calendar = requireGoogle();
     const {
-      calendarId = GCAL_CALENDAR_ID,
+      calendarId = CONFIG.GCAL_CALENDAR_ID,
       timeMin,
       timeMax,
       maxResults = 100,
@@ -171,20 +272,17 @@ app.get('/api/gcal/events', async (req, res) => {
     const params = {
       calendarId,
       maxResults: Number(maxResults),
-      singleEvents: true,
-      showDeleted: String(showDeleted) === 'true',
-      pageToken,
-      orderBy: 'startTime',
     };
 
     if (syncToken) {
-      // Incremental sync: do NOT include timeMin/timeMax/orderBy
-      params.syncToken = syncToken;
-      delete params.singleEvents;
-      delete params.orderBy;
+      params.syncToken = syncToken;     // incremental sync
     } else {
-      params.timeMin = timeMin || new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-      params.timeMax = timeMax || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+      params.singleEvents = true;
+      params.orderBy = 'startTime';
+      params.timeMin = timeMin || new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
+      params.timeMax = timeMax || new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString();
+      params.showDeleted = String(showDeleted) === 'true';
+      if (pageToken) params.pageToken = pageToken;
     }
 
     const { data } = await calendar.events.list(params);
@@ -193,32 +291,32 @@ app.get('/api/gcal/events', async (req, res) => {
       nextPageToken: data.nextPageToken || null,
       nextSyncToken: data.nextSyncToken || null,
     });
-  } catch (e) {
-    // If syncToken expired, Google returns 410 GONE
-    const status = e.code || e.status || 500;
-    res.status(status).json({ error: e.message || 'Failed to list events' });
+  } catch (err) {
+    // If syncToken expired → 410 Gone
+    next(err);
   }
 });
 
-// Create event
-app.post('/api/gcal/events', async (req, res) => {
+app.post('/api/gcal/events', async (req, res, next) => {
   try {
-    const calendar = authedCalendar();
+    const calendar = requireGoogle();
     const {
-      calendarId = GCAL_CALENDAR_ID,
+      calendarId = CONFIG.GCAL_CALENDAR_ID,
       summary,
       description,
       location,
-      start, // {dateTime, timeZone} OR {date}
-      end,   // same shape as start
+      start,
+      end,
       attendees,
       reminders,
       colorId,
-      extendedProperties, // { private: { lighthouseId, studentId, type } }
-      conferenceData,     // { createRequest: { requestId } } to create Meet
+      extendedProperties,
+      conferenceData,
       transparency = 'opaque',
       visibility = 'default',
     } = req.body || {};
+
+    assert(start && end, 'start/end required');
 
     const { data } = await calendar.events.insert({
       calendarId,
@@ -241,18 +339,17 @@ app.post('/api/gcal/events', async (req, res) => {
     });
 
     res.status(201).json(data);
-  } catch (e) {
-    console.error('Create event error:', e?.response?.data || e);
-    res.status(500).json({ error: e.message || 'Failed to create event' });
+  } catch (err) {
+    next(err);
   }
 });
 
-// Update event
-app.patch('/api/gcal/events/:eventId', async (req, res) => {
+app.patch('/api/gcal/events/:eventId', async (req, res, next) => {
   try {
-    const calendar = authedCalendar();
+    const calendar = requireGoogle();
     const { eventId } = req.params;
-    const { calendarId = GCAL_CALENDAR_ID, ...patchFields } = req.body || {};
+    const { calendarId = CONFIG.GCAL_CALENDAR_ID, ...patchFields } = req.body || {};
+    assert(eventId, 'eventId required');
 
     const { data } = await calendar.events.patch({
       calendarId,
@@ -263,18 +360,17 @@ app.patch('/api/gcal/events/:eventId', async (req, res) => {
     });
 
     res.json(data);
-  } catch (e) {
-    console.error('Update event error:', e?.response?.data || e);
-    res.status(500).json({ error: e.message || 'Failed to update event' });
+  } catch (err) {
+    next(err);
   }
 });
 
-// Delete event
-app.delete('/api/gcal/events/:eventId', async (req, res) => {
+app.delete('/api/gcal/events/:eventId', async (req, res, next) => {
   try {
-    const calendar = authedCalendar();
+    const calendar = requireGoogle();
     const { eventId } = req.params;
-    const { calendarId = GCAL_CALENDAR_ID } = req.query;
+    const { calendarId = CONFIG.GCAL_CALENDAR_ID } = req.query;
+    assert(eventId, 'eventId required');
 
     await calendar.events.delete({
       calendarId,
@@ -283,45 +379,31 @@ app.delete('/api/gcal/events/:eventId', async (req, res) => {
     });
 
     res.json({ ok: true, deleted: eventId });
-  } catch (e) {
-    console.error('Delete event error:', e?.response?.data || e);
-    res.status(500).json({ error: e.message || 'Failed to delete event' });
-  }
-});
-
-/* ========== TWILIO SMS ENDPOINTS ========== */
-// Incoming SMS (Twilio → your server)
-app.post('/sms', (req, res) => {
-  try {
-    const twiml = new MessagingResponse();
-    twiml.message("Thanks for texting ACT Dance! We’ll get back to you shortly.");
-    res.type('text/xml').send(twiml.toString());
-  } catch (e) {
-    console.error('Twilio webhook error:', e);
-    res.status(500).type('text/plain').send('Webhook error');
-  }
-});
-
-// Outgoing SMS (your app → Twilio → user)
-app.post('/api/sms/send', async (req, res) => {
-  try {
-    const { to, body } = req.body || {};
-    if (!to || !body) return res.status(400).json({ ok: false, error: 'Missing to/body' });
-
-    const message = await twilioClient.messages.create({
-      from: TWILIO_PHONE_NUMBER,
-      to,
-      body,
-    });
-
-    res.json({ ok: true, sid: message.sid, status: message.status });
   } catch (err) {
-    console.error('❌ SMS send error:', err?.message || err);
-    res.status(500).json({ ok: false, error: err.message || 'SMS send failed' });
+    next(err);
   }
 });
 
-/* ========== START ========== */
-app.listen(PORT, () => {
-  console.log(`✅ ACT SMS server running on ${PORT}`);
+/* ============================================================================
+ * 404 + ERROR HANDLERS
+ * ==========================================================================*/
+app.use((req, res) => {
+  res.status(404).json({ error: 'Not Found', path: req.path });
+});
+
+app.use((err, _req, res, _next) => {
+  const status = err.status || err.code || 500;
+  const message = err.message || 'Internal Server Error';
+  // Log a concise error with any nested Google/Twilio payload if present
+  const detail = err?.response?.data || err?.more || null;
+  if (detail) console.error('❌ Error detail:', detail);
+  console.error('❌', status, message);
+  res.status(status).json({ error: message });
+});
+
+/* ============================================================================
+ * START
+ * ==========================================================================*/
+app.listen(CONFIG.PORT, () => {
+  console.log(`✅ ACT backend running on port ${CONFIG.PORT}`);
 });
