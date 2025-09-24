@@ -131,6 +131,10 @@ function verifyAutomationSecret(req) {
   const incoming = req.header('X-Automation-Secret') || req.header('x-automation-secret');
   return incoming && incoming === CONFIG.AUTOMATION_SHARED_SECRET;
 }
+// helper to pick body or query (supports JSON body OR ?query=params)
+function getPayload(req) {
+  return (req.body && Object.keys(req.body).length) ? req.body : req.query;
+}
 
 /* ============================================================================
  * BASIC HEALTH
