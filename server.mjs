@@ -136,6 +136,15 @@ function getPayload(req) {
   return (req.body && Object.keys(req.body).length) ? req.body : req.query;
 }
 
+function verifyAutomationSecret(req) {
+  if (!CONFIG.AUTOMATION_SHARED_SECRET) return true; // not enforced
+  const header = req.header('X-Automation-Secret') || req.header('x-automation-secret');
+  const src = getPayload(req);
+  const bodySecret = src?.secret || src?.automationSecret || src?.X_Automation_Secret;
+  return (header && header === CONFIG.AUTOMATION_SHARED_SECRET) ||
+         (bodySecret && bodySecret === CONFIG.AUTOMATION_SHARED_SECRET);
+}
+
 /* ============================================================================
  * BASIC HEALTH
  * ==========================================================================*/
