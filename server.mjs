@@ -407,13 +407,23 @@ app.post('/api/email/send', async (req, res) => {
       return res.status(400).json({ ok: false, error: 'to, subject, and html or text are required' });
     }
 
-   app.post('/api/email/send', async (req, res) => {
-  try {
-    const { to, subject, html, text } = req.body;
+    const msg = {
+      to,
+      from: { email: process.env.SENDGRID_FROM_EMAIL, name: process.env.SENDGRID_FROM_NAME },
+      subject,
+      html: html || undefined,
+      text: text || undefined,
+      asm: { groupId: Number(process.env.SENDGRID_MARKETING_GROUP_ID) }
+    };
 
-    if (!to || !subject || (!html && !text)) {
-      return res.status(400).json({ ok: false, error: 'to, subject, and html or text are required' });
-    }
+    const [response] = await sgMail.send(msg);
+    return res.json({ ok: true, status: response.statusCode });
+  } catch (err) {
+    console.error('SendGrid error:', err?.response?.body || err.message);
+    return res.status(500).json({ ok: false, error: err?.response?.body || err.message });
+  }
+});
+
 
     // ⇩⇩ REPLACE your old msg object with this block ⇩⇩
     const msg = {
