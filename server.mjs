@@ -4,6 +4,7 @@ import express from 'express';
 import cors from 'cors';
 import twilio from 'twilio';
 import { google } from 'googleapis';
+import sgMail from '@sendgrid/mail';
 
 /* ============================================================================
  * CONFIG
@@ -46,6 +47,10 @@ function warnMissingEnv(name) {
 ['AUTOMATION_SHARED_SECRET'].forEach(warnMissingEnv);
 // Required only if you use Google Calendar sync
 ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_REDIRECT_URI'].forEach(warnMissingEnv);
+// Helpful warnings for email
+['SENDGRID_API_KEY', 'SENDGRID_FROM_EMAIL', 'SENDGRID_MARKETING_GROUP_ID'].forEach((k) =>
+  !process.env[k] && console.warn(`⚠️  Missing env: ${k}`)
+);
 
 /* ============================================================================
  * APP & MIDDLEWARE
@@ -394,26 +399,54 @@ app.delete('/api/gcal/events/:eventId', async (req, res, next) => {
     next(err);
   }
 });
-// ======== SENDGRID SETUP ========
-import sgMail from '@sendgrid/mail';
+
+/* ============================================================================
+ * SENDGRID SETUP
+ * ==========================================================================*/
 sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
-// ======== EMAIL ENDPOINT ========
+/* ============================================================================
+ * EMAIL ENDPOINT (enhanced)
+ * ==========================================================================*/
 app.post('/api/email/send', async (req, res) => {
   try {
-    const { to, subject, html, text } = req.body;
+    let { to, subject, html, text, categories = [], customArgs = {} } = req.body || {};
 
     if (!to || !subject || (!html && !text)) {
       return res.status(400).json({ ok: false, error: 'to, subject, and html or text are required' });
     }
 
+    // Allow single string, comma-separated, or array
+    const recipients = Array.isArray(to)
+      ? to
+      : String(to).split(',').map((s) => s.trim()).filter(Boolean);
+
+    // Auto-append compliant footer with Unsubscribe (if not already present)
+    if (html && !html.includes('<%asm_group_unsubscribe_raw_url%>')) {
+      html += `
+        <hr>
+        <p style="font-size:12px;opacity:0.8;line-height:1.4">
+          You’re receiving this because you engaged with ACT Dance.<br>
+          <a href="<%asm_group_unsubscribe_raw_url%>">Unsubscribe</a> anytime.
+          <br>ACT Dance • Kelowna, BC
+        </p>`;
+    }
+
     const msg = {
-      to,
+      to: recipients,
       from: { email: process.env.SENDGRID_FROM_EMAIL, name: process.env.SENDGRID_FROM_NAME },
       subject,
       html: html || undefined,
       text: text || undefined,
-      asm: { groupId: Number(process.env.SENDGRID_MARKETING_GROUP_ID) }
+      categories: Array.isArray(categories) ? categories.slice(0, 4) : undefined,
+      customArgs: customArgs && typeof customArgs === 'object' ? customArgs : undefined,
+      asm: process.env.SENDGRID_MARKETING_GROUP_ID
+        ? { groupId: Number(process.env.SENDGRID_MARKETING_GROUP_ID) }
+        : undefined, // unsubscribe group
+      trackingSettings: {
+        clickTracking: { enable: true },
+        openTracking: { enable: true },
+      },
     };
 
     const [response] = await sgMail.send(msg);
@@ -421,35 +454,6 @@ app.post('/api/email/send', async (req, res) => {
   } catch (err) {
     console.error('SendGrid error:', err?.response?.body || err.message);
     return res.status(500).json({ ok: false, error: err?.response?.body || err.message });
-  }
-});
-
-
-    // ⇩⇩ REPLACE your old msg object with this block ⇩⇩
-    const msg = {
-      to,
-      from: { email: process.env.SENDGRID_FROM_EMAIL, name: process.env.SENDGRID_FROM_NAME },
-      subject,
-      html: html || undefined,
-      text: text || undefined,
-      asm: { groupId: Number(process.env.SENDGRID_MARKETING_GROUP_ID) } // unsubscribe group
-    };
-    // ⇧⇧ keep this just above sgMail.send(msg) ⇧⇧
-
-    const [response] = await sgMail.send(msg);
-    return res.json({ ok: true, status: response.statusCode });
-  } catch (err) {
-    console.error('SendGrid error:', err?.response?.body || err.message);
-    return res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-
-    const [response] = await sgMail.send(msg);
-    return res.json({ ok: true, status: response.statusCode });
-  } catch (err) {
-    console.error('SendGrid error:', err?.response?.body || err.message);
-    return res.status(500).json({ ok: false, error: err.message });
   }
 });
 
