@@ -394,6 +394,37 @@ app.delete('/api/gcal/events/:eventId', async (req, res, next) => {
     next(err);
   }
 });
+// ======== SENDGRID SETUP ========
+import sgMail from '@sendgrid/mail';
+sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+
+// ======== EMAIL ENDPOINT ========
+app.post('/api/email/send', async (req, res) => {
+  try {
+    const { to, subject, html, text } = req.body;
+
+    if (!to || !subject || (!html && !text)) {
+      return res.status(400).json({ ok: false, error: 'to, subject, and html or text are required' });
+    }
+
+    const msg = {
+      to,
+      from: {
+        email: process.env.SENDGRID_FROM_EMAIL,
+        name: process.env.SENDGRID_FROM_NAME,
+      },
+      subject,
+      html: html || undefined,
+      text: text || undefined,
+    };
+
+    const [response] = await sgMail.send(msg);
+    return res.json({ ok: true, status: response.statusCode });
+  } catch (err) {
+    console.error('SendGrid error:', err?.response?.body || err.message);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
 
 /* ============================================================================
  * 404 + ERROR HANDLERS
