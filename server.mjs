@@ -442,11 +442,16 @@ app.get('/auth/google/sheets', (req, res, next) => {
       prompt: 'consent', // ensures refresh_token if needed
       redirect_uri: CONFIG.GOOGLE_REDIRECT_URI_SHEETS || CONFIG.GOOGLE_REDIRECT_URI,
     });
+
+    // ✅ Log AFTER the URL is created
+    console.log('SHEETS AUTH URL →', url);
+
     res.redirect(url);
   } catch (err) {
     next(err);
   }
 });
+
 
 app.get('/oauth2callback/sheets', async (req, res, next) => {
   try {
