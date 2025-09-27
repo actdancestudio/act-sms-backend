@@ -13,7 +13,7 @@ const CONFIG = {
   PORT: Number(process.env.PORT || 10000),
 
   // CORS
-  FRONTEND_ORIGIN: process.env.FRONTEND_ORIGIN || 'https://www.lighthouse.actdance.ca',
+  FRONTEND_ORIGIN: process.env.FRONTPEND_ORIGIN || process.env.FRONTEND_ORIGIN || 'https://www.lighthouse.actdance.ca',
   DEV_ORIGINS: (process.env.DEV_ORIGINS || 'https://lighthouse.actdance.ca,https://app.base44.com')
     .split(',')
     .map((s) => s.trim())
@@ -34,8 +34,15 @@ const CONFIG = {
   // Google OAuth / Calendar
   GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID,
   GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET,
-  GOOGLE_REDIRECT_URI: process.env.GOOGLE_REDIRECT_URI, // e.g. https://lighthouse.actdance.ca/oauth2/callback
+  GOOGLE_REDIRECT_URI: process.env.GOOGLE_REDIRECT_URI, // e.g. http://localhost:10000/oauth2callback
+
+  // NEW: Sheets-specific redirect so Calendar & Sheets can use different callbacks
+  GOOGLE_REDIRECT_URI_SHEETS: process.env.GOOGLE_REDIRECT_URI_SHEETS, // e.g. http://localhost:10000/oauth2callback/sheets
+
   GCAL_CALENDAR_ID: process.env.GCAL_CALENDAR_ID || 'primary',
+
+  // Sheets
+  SHEETS_SPREADSHEET_ID: process.env.SHEETS_SPREADSHEET_ID,
 };
 
 function warnMissingEnv(name) {
@@ -45,38 +52,12 @@ function warnMissingEnv(name) {
 ['TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_PHONE_NUMBER', 'ALERT_PHONE'].forEach(warnMissingEnv);
 // Nice-to-have for securing webhooks
 ['AUTOMATION_SHARED_SECRET'].forEach(warnMissingEnv);
-// Required only if you use Google Calendar sync
+// Required only if you use Google OAuth
 ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_REDIRECT_URI'].forEach(warnMissingEnv);
 // Helpful warnings for email
 ['SENDGRID_API_KEY', 'SENDGRID_FROM_EMAIL', 'SENDGRID_MARKETING_GROUP_ID'].forEach((k) =>
   !process.env[k] && console.warn(`⚠️  Missing env: ${k}`)
 );
-
-// ===== SHEETS AUTH (separate, safe) =====
-app.get('/auth/google/sheets', (req, res) => {
-  const url = oauth2Client.generateAuthUrl({
-    access_type: 'offline',
-    include_granted_scopes: true, // incremental auth; keeps your Calendar access
-    scope: [
-      'https://www.googleapis.com/auth/spreadsheets',
-      'https://www.googleapis.com/auth/drive.file',
-    ],
-    prompt: 'consent', // ensures refresh_token if needed
-  });
-  res.redirect(url);
-});
-
-app.get('/oauth2callback/sheets', async (req, res) => {
-  try {
-    const { code } = req.query;
-    const { tokens } = await oauth2Client.getToken(code);
-    oauth2Client.setCredentials(tokens);
-    res.send('✅ Google Sheets connected (separate route). You can close this tab.');
-  } catch (err) {
-    console.error('Sheets OAuth error:', err);
-    res.status(500).send('❌ Sheets OAuth failed. Check server logs.');
-  }
-});
 
 /* ============================================================================
  * APP & MIDDLEWARE
@@ -143,6 +124,17 @@ function requireGoogle() {
   }
   oauth2Client.setCredentials(gTokens);
   return google.calendar({ version: 'v3', auth: oauth2Client });
+}
+
+// NEW: Sheets helper (parallel to requireGoogle)
+function requireSheets() {
+  if (!gTokens?.access_token && !gTokens?.refresh_token) {
+    const err = new Error('Google not connected. Visit /auth/google/sheets to connect Sheets.');
+    err.status = 401;
+    throw err;
+  }
+  oauth2Client.setCredentials(gTokens);
+  return google.sheets({ version: 'v4', auth: oauth2Client });
 }
 
 /* ============================================================================
@@ -246,7 +238,7 @@ app.post('/api/sms/send', async (req, res, next) => {
 });
 
 /* ============================================================================
- * GOOGLE OAUTH FLOW
+ * GOOGLE OAUTH FLOW (Calendar)
  * ==========================================================================*/
 app.get('/oauth2/ping', (_req, res) => {
   res.json({
@@ -276,7 +268,7 @@ app.get('/oauth2/callback', async (req, res, next) => {
 
     const { tokens } = await oauth2Client.getToken(code);
     oauth2Client.setCredentials(tokens);
-    gTokens = tokens;
+    gTokens = { ...(gTokens || {}), ...tokens };
 
     res.send('Google Calendar connected ✔️ You can close this tab.');
   } catch (err) {
@@ -421,6 +413,86 @@ app.delete('/api/gcal/events/:eventId', async (req, res, next) => {
     });
 
     res.json({ ok: true, deleted: eventId });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* ============================================================================
+ * GOOGLE SHEETS AUTH (separate, safe)
+ *  - Uses Sheets-specific redirect if set; otherwise falls back to main redirect
+ * ==========================================================================*/
+app.get('/auth/google/sheets', (req, res, next) => {
+  try {
+    const url = oauth2Client.generateAuthUrl({
+      access_type: 'offline',
+      include_granted_scopes: true, // incremental auth; keeps your Calendar access
+      scope: [
+        'https://www.googleapis.com/auth/spreadsheets',
+        'https://www.googleapis.com/auth/drive.file',
+      ],
+      prompt: 'consent', // ensures refresh_token if needed
+      redirect_uri: CONFIG.GOOGLE_REDIRECT_URI_SHEETS || CONFIG.GOOGLE_REDIRECT_URI,
+    });
+    res.redirect(url);
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/oauth2callback/sheets', async (req, res, next) => {
+  try {
+    const { code } = req.query;
+    const redirectUri = CONFIG.GOOGLE_REDIRECT_URI_SHEETS || CONFIG.GOOGLE_REDIRECT_URI;
+
+    const { tokens } = await oauth2Client.getToken({ code, redirect_uri: redirectUri });
+    oauth2Client.setCredentials(tokens);
+
+    // merge with any existing tokens (so Calendar keeps working)
+    gTokens = { ...(gTokens || {}), ...tokens };
+
+    res.send('✅ Google Sheets connected (separate route). You can close this tab.');
+  } catch (err) {
+    console.error('Sheets OAuth error:', err);
+    next(err);
+  }
+});
+
+/* ============================================================================
+ * GOOGLE SHEETS: tiny status/read/append endpoints (for testing)
+ * ==========================================================================*/
+app.get('/api/sheets/status', (_req, res) => {
+  const connected = !!(gTokens?.access_token || gTokens?.refresh_token);
+  res.json({ connected, spreadsheetId: CONFIG.SHEETS_SPREADSHEET_ID || null });
+});
+
+app.get('/api/sheets/read', async (req, res, next) => {
+  try {
+    const sheets = requireSheets();
+    const spreadsheetId = CONFIG.SHEETS_SPREADSHEET_ID;
+    const range = String(req.query.range || 'Sheet1!A1:B10');
+    const { data } = await sheets.spreadsheets.values.get({ spreadsheetId, range });
+    res.json({ ok: true, range, values: data.values || [] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/api/sheets/append', async (req, res, next) => {
+  try {
+    const sheets = requireSheets();
+    const spreadsheetId = CONFIG.SHEETS_SPREADSHEET_ID;
+    const range = String(req.body?.range || 'Sheet1!A1');
+    const values = Array.isArray(req.body?.values) ? req.body.values : null;
+    assert(values && Array.isArray(values[0]), 'values must be a 2D array, e.g. [["A","B"]]');
+    const { data } = await sheets.spreadsheets.values.append({
+      spreadsheetId,
+      range,
+      valueInputOption: 'USER_ENTERED',
+      insertDataOption: 'INSERT_ROWS',
+      requestBody: { values },
+    });
+    res.json({ ok: true, updates: data.updates || null });
   } catch (err) {
     next(err);
   }
