@@ -51,7 +51,7 @@ function warnMissingEnv(name) {
 ['SENDGRID_API_KEY', 'SENDGRID_FROM_EMAIL', 'SENDGRID_MARKETING_GROUP_ID'].forEach((k) =>
   !process.env[k] && console.warn(`⚠️  Missing env: ${k}`)
 );
-import { google } from 'googleapis';
+
 // ===== SHEETS AUTH (separate, safe) =====
 app.get('/auth/google/sheets', (req, res) => {
   const url = oauth2Client.generateAuthUrl({
