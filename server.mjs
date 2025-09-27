@@ -51,6 +51,32 @@ function warnMissingEnv(name) {
 ['SENDGRID_API_KEY', 'SENDGRID_FROM_EMAIL', 'SENDGRID_MARKETING_GROUP_ID'].forEach((k) =>
   !process.env[k] && console.warn(`⚠️  Missing env: ${k}`)
 );
+import { google } from 'googleapis';
+// ===== SHEETS AUTH (separate, safe) =====
+app.get('/auth/google/sheets', (req, res) => {
+  const url = oauth2Client.generateAuthUrl({
+    access_type: 'offline',
+    include_granted_scopes: true, // incremental auth; keeps your Calendar access
+    scope: [
+      'https://www.googleapis.com/auth/spreadsheets',
+      'https://www.googleapis.com/auth/drive.file',
+    ],
+    prompt: 'consent', // ensures refresh_token if needed
+  });
+  res.redirect(url);
+});
+
+app.get('/oauth2callback/sheets', async (req, res) => {
+  try {
+    const { code } = req.query;
+    const { tokens } = await oauth2Client.getToken(code);
+    oauth2Client.setCredentials(tokens);
+    res.send('✅ Google Sheets connected (separate route). You can close this tab.');
+  } catch (err) {
+    console.error('Sheets OAuth error:', err);
+    res.status(500).send('❌ Sheets OAuth failed. Check server logs.');
+  }
+});
 
 /* ============================================================================
  * APP & MIDDLEWARE
