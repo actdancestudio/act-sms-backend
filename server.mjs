@@ -577,3 +577,11 @@ app.use((err, _req, res, _next) => {
 app.listen(CONFIG.PORT, () => {
   console.log(`✅ ACT backend running on port ${CONFIG.PORT}`);
 });
+// DEBUG: show which redirect_uri + client your server will use for Sheets auth
+app.get('/debug/oauth/sheets', (req, res) => {
+  const redirectUri = (process.env.GOOGLE_REDIRECT_URI_SHEETS || process.env.GOOGLE_REDIRECT_URI || '').trim();
+  res.json({
+    clientId: process.env.GOOGLE_CLIENT_ID || null,
+    usingRedirectUri: redirectUri || null,
+  });
+});
