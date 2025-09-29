@@ -618,27 +618,27 @@ app.post('/api/hooks/booking', async (req, res, next) => {
     assert(verifyAutomationSecret(req), 'Unauthorized webhook', 401);
 
     const {
-  trackingNumber,
-  student = {},
-  teacher = '',
-  startIso,
-  endIso,
-  location = '',
-  frontBack = '',
-  title = '',
-  notes = '',
-  programPlusCount = '',
-  programCode = ''   // ✨ NEW
-} = req.body || {};
-
+      trackingNumber,        // REQUIRED → goes to P
+      student = {},
+      teacher = '',
+      startIso,
+      endIso,
+      location = '',
+      frontBack = '',        // 'Front' or 'Back' → goes to I
+      title = '',            // optional manual title → goes to F
+      notes = '',            // goes to H
+      programPlusCount = '', // e.g., 'ACT 20, 5/20' → goes to S
+      programCode = ''       // ✨ NEW → will be written to X
+    } = req.body || {};
 
     assert(CONFIG.SHEETS_SPREADSHEET_ID, 'SHEETS_SPREADSHEET_ID not set', 500);
     assert(trackingNumber, 'trackingNumber missing');
     assert(startIso && endIso, 'startIso/endIso required');
 
     const start = new Date(startIso);
-    const end = new Date(endIso);
+    const end   = new Date(endIso);
 
+    // Write A:S only (preserves your formulas in T:W)
     const row = [
       ymd(start),            // A Date
       '',                    // B Name (auto via P using your formula)
@@ -663,20 +663,41 @@ app.post('/api/hooks/booking', async (req, res, next) => {
     ];
 
     const sheets = requireSheets();
-    await sheets.const { data } = await sheets.spreadsheets.values.append({
+    const { data } = await sheets.spreadsheets.values.append({
       spreadsheetId: CONFIG.SHEETS_SPREADSHEET_ID,
       range: 'Events-M02!A2:S2',
       valueInputOption: 'USER_ENTERED',
       insertDataOption: 'INSERT_ROWS',
-      requestBody: { values: [row] },
+      requestBody: { values: [row] }
     });
 
-    res.json({ ok: true, wrote: 'Events-M02!A:S', trackingNumber, startIso, endIso });
+    // ✨ Write Program Code into column X on the same appended row (no formulas touched)
+    try {
+      if (programCode && data && data.updates && data.updates.updatedRange) {
+        // updatedRange example: 'Events-M02!A12:S12' → extract 12
+        const updatedRange = data.updates.updatedRange;
+        const leftCell = updatedRange.split('!')[1].split(':')[0]; // 'A12'
+        const rowNum = Number(leftCell.replace(/[A-Z]/gi, ''));    // 12
+        if (rowNum) {
+          await sheets.spreadsheets.values.update({
+            spreadsheetId: CONFIG.SHEETS_SPREADSHEET_ID,
+            range: `Events-M02!X${rowNum}:X${rowNum}`,
+            valueInputOption: 'USER_ENTERED',
+            requestBody: { values: [[programCode]] }
+          });
+        }
+      }
+    } catch (e) {
+      console.warn('Program Code write warn:', e?.message || e);
+    }
+
+    res.json({ ok: true, wrote: 'Events-M02!A:S', trackingNumber, startIso, endIso, programCode });
   } catch (err) {
     console.error('[booking webhook ERROR]', err);
     next(err);
   }
 });
+
 
 /* ============================================================================
  * START
