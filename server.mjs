@@ -145,8 +145,7 @@ function requireGoogle() {
   oauth2Client.setCredentials(gTokens);
   return google.calendar({ version: 'v3', auth: oauth2Client });
 }
-const blob = JSON.stringify(gTokens);
-console.log('GOOGLE_TOKENS_JSON →', blob);
+
 
 // NEW: Sheets helper (parallel to requireGoogle)
 function requireSheets() {
