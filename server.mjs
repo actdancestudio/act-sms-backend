@@ -647,6 +647,7 @@ function monthTabFor(startIso) {
   if (m < 1 || m > TOTAL_MONTHS) throw new Error('Date outside M01–M24 window');
   return `Events-M${String(m).padStart(2, '0')}`;
 }
+const sheets = requireSheets(); // ensure 'sheets' is defined here
 
 // ✅ Normalize formatting on the row we just wrote
 try {
