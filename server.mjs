@@ -583,6 +583,11 @@ app.use((err, _req, res, _next) => {
   console.error('❌', status, message);
   res.status(status).json({ error: message });
 });
+// --- TEST: booking webhook route ---
+app.post('/api/hooks/booking', (req, res) => {
+  console.log('[booking webhook]', req.body);
+  res.json({ ok: true, echo: req.body });
+});
 
 /* ============================================================================
  * START
