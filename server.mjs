@@ -648,87 +648,66 @@ function monthTabFor(startIso) {
   return `Events-M${String(m).padStart(2, '0')}`;
 }
 
-app.post('/api/hooks/booking', async (req, res, next) => {
-  try {
-    assert(verifyAutomationSecret(req), 'Unauthorized webhook', 401);
+// ✅ Normalize formatting on the row we just wrote
+try {
+  const spreadsheetId = CONFIG.SHEETS_SPREADSHEET_ID;
 
-    const {
-      trackingNumber,
-      student = {},
-      teacher = '',
-      startIso,
-      endIso,
-      location = '',
-      frontBack = '',
-      title = '',
-      notes = '',
-      programPlusCount = '',
-      programCode = '',
-      targetRow = null          // 👈 choose a specific row (>=2) or omit to append
-    } = req.body || {};
+  // 1) Get the numeric sheetId for the tab (e.g., "Events-M03")
+  const { data: meta } = await sheets.spreadsheets.get({
+    spreadsheetId,
+    fields: 'sheets(properties(sheetId,title))'
+  });
+  const sh = (meta.sheets || []).find(s => s.properties?.title === tab);
+  if (sh && rowNum) {
+    const sheetId = sh.properties.sheetId;
 
-    assert(CONFIG.SHEETS_SPREADSHEET_ID, 'SHEETS_SPREADSHEET_ID not set', 500);
-    assert(trackingNumber, 'trackingNumber missing');
-    assert(startIso && endIso, 'startIso/endIso required');
-
-    await upsertStudentInMaster({ name: (student?.name || ''), trackingNumber });
-
-    const start = new Date(startIso);
-    const end   = new Date(endIso);
-    const tab   = monthTabFor(startIso);
-
-    const row = [
-      ymd(start), '', teacher, hm(start), hm(end),
-      title, location, notes, frontBack,
-      '', '', '', '', '', '',                   // J..O left for formulas/flags
-      trackingNumber, '', '',                   // P,Q,R
-      programPlusCount                          // S
-      // T..W formulas on sheet
-    ];
-
-    const sheets = requireSheets();
-    const spreadsheetId = CONFIG.SHEETS_SPREADSHEET_ID;
-    let rowNum = null;
-
-    if (Number(targetRow) >= 2) {
-      rowNum = Number(targetRow);
-      await sheets.spreadsheets.values.update({
-        spreadsheetId,
-        range: `${tab}!A${rowNum}:S${rowNum}`,
-        valueInputOption: 'USER_ENTERED',
-        requestBody: { values: [row] }
-      });
-    } else {
-      const { data } = await sheets.spreadsheets.values.append({
-        spreadsheetId,
-        range: `${tab}!A2:S2`,
-        valueInputOption: 'USER_ENTERED',
-        insertDataOption: 'INSERT_ROWS',
-        requestBody: { values: [row] }
-      });
-      const updatedRange = data?.updates?.updatedRange; // e.g., 'Events-M03!A12:S12'
-      if (updatedRange) {
-        const leftCell = updatedRange.split('!')[1].split(':')[0]; // 'A12'
-        rowNum = Number(leftCell.replace(/[A-Z]/gi, ''));
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: {
+        requests: [
+          // A) Clear user-entered formatting on the new row (keeps validation/rules)
+          {
+            repeatCell: {
+              range: {
+                sheetId,
+                startRowIndex: rowNum - 1, // target row (0-based)
+                endRowIndex: rowNum,
+                startColumnIndex: 0,  // A
+                endColumnIndex: 24    // X (exclusive)
+              },
+              cell: { userEnteredFormat: {} },
+              fields: 'userEnteredFormat'
+            }
+          },
+          // B) Paste formatting from row 2 onto the new row
+          {
+            copyPaste: {
+              source: {
+                sheetId,
+                startRowIndex: 1,  // row 2 (0-based)
+                endRowIndex: 2,
+                startColumnIndex: 0,   // A
+                endColumnIndex: 24     // X (exclusive)
+              },
+              destination: {
+                sheetId,
+                startRowIndex: rowNum - 1,
+                endRowIndex: rowNum,
+                startColumnIndex: 0,
+                endColumnIndex: 24
+              },
+              pasteType: 'PASTE_FORMAT',
+              pasteOrientation: 'NORMAL'
+            }
+          }
+        ]
       }
-    }
-
-    // Write Program Code (X) on same row if provided
-    if (programCode && rowNum) {
-      await sheets.spreadsheets.values.update({
-        spreadsheetId,
-        range: `${tab}!X${rowNum}:X${rowNum}`,
-        valueInputOption: 'USER_ENTERED',
-        requestBody: { values: [[programCode]] }
-      });
-    }
-
-    res.json({ ok: true, wrote: `${tab}!A:S`, row: rowNum, trackingNumber, startIso, endIso, programCode });
-  } catch (err) {
-    console.error('[booking webhook ERROR]', err);
-    next(err);
+    });
   }
-});
+} catch (e) {
+  console.warn('format normalize warn:', e?.message || e);
+}
+
 
 
 /* ============================================================================
