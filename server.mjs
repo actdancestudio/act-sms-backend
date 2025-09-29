@@ -700,22 +700,35 @@ app.post('/api/hooks/booking', async (req, res, next) => {
     const sheets = requireSheets();
     const spreadsheetId = CONFIG.SHEETS_SPREADSHEET_ID;
 
-    // ALWAYS APPEND to first available row starting at row 2
-    const { data } = await sheets.spreadsheets.values.append({
-      spreadsheetId,
-      range: `${sheetTab}!A2:S2`,
-      valueInputOption: 'USER_ENTERED',
-      insertDataOption: 'INSERT_ROWS',
-      requestBody: { values: [row] }
-    });
+   // ALWAYS WRITE starting from row 2, with optional override to a specific row
+let rowNum = null;
+const targetRow = Number(req.body?.targetRow || 0);
 
-    // Determine the row we just wrote (e.g., 'Events-M03!A12:S12' → 12)
-    let rowNum = null;
-    const updatedRange = data?.updates?.updatedRange;
-    if (updatedRange) {
-      const leftCell = updatedRange.split('!')[1].split(':')[0]; // 'A12'
-      rowNum = Number(leftCell.replace(/[A-Z]/gi, ''));           // 12
-    }
+if (targetRow >= 2) {
+  // Write directly into a specific row (e.g., 3)
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: `${sheetTab}!A${targetRow}:S${targetRow}`,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: { values: [row] }
+  });
+  rowNum = targetRow;
+} else {
+  // Default: append to first available row below the header
+  const { data } = await sheets.spreadsheets.values.append({
+    spreadsheetId,
+    range: `${sheetTab}!A2:S2`,
+    valueInputOption: 'USER_ENTERED',
+    insertDataOption: 'INSERT_ROWS',
+    requestBody: { values: [row] }
+  });
+  const updatedRange = data?.updates?.updatedRange; // e.g., 'Events-M03!A12:S12'
+  if (updatedRange) {
+    const leftCell = updatedRange.split('!')[1].split(':')[0]; // 'A12'
+    rowNum = Number(leftCell.replace(/[A-Z]/gi, ''));
+  }
+}
+
 
     // Write Program Code (X) on same row if provided
     if (programCode && rowNum) {
