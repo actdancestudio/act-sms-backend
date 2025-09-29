@@ -634,6 +634,16 @@ async function upsertStudentInMaster({ name = '', trackingNumber = '' }) {
 const pad2 = (n) => String(n).padStart(2, '0');
 const ymd = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 const hm = (d) => `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+// Choose Events-MXX tab by lesson date (Month 1 = Sep 2025 → Events-M01)
+const MONTH1 = new Date('2025-09-01T00:00:00-07:00'); // change if your Month 1 is different
+const TOTAL_MONTHS = 24;
+function monthTabFor(startIso) {
+  const d = new Date(startIso);
+  const offset = (d.getFullYear() - MONTH1.getFullYear()) * 12 + (d.getMonth() - MONTH1.getMonth());
+  const m = offset + 1; // 1..24
+  if (m < 1 || m > TOTAL_MONTHS) throw new Error('Date outside M01–M24 window');
+  return `Events-M${String(m).padStart(2, '0')}`;
+}
 
 app.post('/api/hooks/booking', async (req, res, next) => {
   try {
