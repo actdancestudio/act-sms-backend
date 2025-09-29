@@ -722,8 +722,7 @@ app.post('/api/hooks/booking', async (req, res, next) => {
       const leftCell = updatedRange.split('!')[1].split(':')[0]; // 'A12'
       rowNum = Number(leftCell.replace(/[A-Z]/gi, ''));           // 12
     }
-
-   // ⬇️ Force the new row to use row 2's formatting (not the header's)
+// ⬇️ Force the new row to use row 2's formatting (not the header's)
 try {
   const spreadsheetId = CONFIG.SHEETS_SPREADSHEET_ID;
 
@@ -769,6 +768,26 @@ try {
   console.warn('Format copy warn:', e?.message || e);
 }
 
+    // Write Program Code (X) on same row if provided
+    try {
+      if (programCode && rowNum) {
+        await sheets.spreadsheets.values.update({
+          spreadsheetId,
+          range: `${tab}!X${rowNum}:X${rowNum}`,
+          valueInputOption: 'USER_ENTERED',
+          requestBody: { values: [[programCode]] }
+        });
+      }
+    } catch (e) {
+      console.warn('Program Code write warn:', e?.message || e);
+    }
+
+    res.json({ ok: true, wrote: `${tab}!A:S`, row: rowNum, trackingNumber, startIso, endIso, programCode });
+  } catch (err) {
+    console.error('[booking webhook ERROR]', err);
+    next(err);
+  }
+});
 
 
 /* ============================================================================
