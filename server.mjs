@@ -586,21 +586,7 @@ app.post('/api/email/send', async (req, res) => {
   }
 });
 
-/* ============================================================================
- * 404 + ERROR HANDLERS
- * ==========================================================================*/
-app.use((req, res) => {
-  res.status(404).json({ error: 'Not Found', path: req.path });
-});
 
-app.use((err, _req, res, _next) => {
-  const status = err.status || err.code || 500;
-  const message = err.message || 'Internal Server Error';
-  const detail = err?.response?.data || err?.more || null;
-  if (detail) console.error('❌ Error detail:', detail);
-  console.error('❌', status, message);
-  res.status(status).json({ error: message });
-});
 // === Upsert student into Student Master List (A=name, D=trackingNumber) ===
 async function upsertStudentInMaster({ name = '', trackingNumber = '' }) {
   const sheets = requireSheets();
@@ -736,7 +722,21 @@ await upsertStudentInMaster({ name: (student?.name || ''), trackingNumber });
   }
 });
 
+/* ============================================================================
+ * 404 + ERROR HANDLERS
+ * ==========================================================================*/
+app.use((req, res) => {
+  res.status(404).json({ error: 'Not Found', path: req.path });
+});
 
+app.use((err, _req, res, _next) => {
+  const status = err.status || err.code || 500;
+  const message = err.message || 'Internal Server Error';
+  const detail = err?.response?.data || err?.more || null;
+  if (detail) console.error('❌ Error detail:', detail);
+  console.error('❌', status, message);
+  res.status(status).json({ error: message });
+});
 /* ============================================================================
  * START
  * ==========================================================================*/
