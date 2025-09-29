@@ -618,17 +618,19 @@ app.post('/api/hooks/booking', async (req, res, next) => {
     assert(verifyAutomationSecret(req), 'Unauthorized webhook', 401);
 
     const {
-      trackingNumber,        // REQUIRED → goes to P
-      student = {},
-      teacher = '',
-      startIso,
-      endIso,
-      location = '',
-      frontBack = '',        // 'Front' or 'Back' → goes to I
-      title = '',            // optional manual title → goes to F
-      notes = '',            // goes to H
-      programPlusCount = ''  // e.g., 'ACT 20, 5/20' → goes to S
-    } = req.body || {};
+  trackingNumber,
+  student = {},
+  teacher = '',
+  startIso,
+  endIso,
+  location = '',
+  frontBack = '',
+  title = '',
+  notes = '',
+  programPlusCount = '',
+  programCode = ''   // ✨ NEW
+} = req.body || {};
+
 
     assert(CONFIG.SHEETS_SPREADSHEET_ID, 'SHEETS_SPREADSHEET_ID not set', 500);
     assert(trackingNumber, 'trackingNumber missing');
@@ -661,7 +663,7 @@ app.post('/api/hooks/booking', async (req, res, next) => {
     ];
 
     const sheets = requireSheets();
-    await sheets.spreadsheets.values.append({
+    await sheets.const { data } = await sheets.spreadsheets.values.append({
       spreadsheetId: CONFIG.SHEETS_SPREADSHEET_ID,
       range: 'Events-M02!A2:S2',
       valueInputOption: 'USER_ENTERED',
