@@ -43,6 +43,11 @@ const CONFIG = {
 
   // Sheets
   SHEETS_SPREADSHEET_ID: process.env.SHEETS_SPREADSHEET_ID,
+
+  // Future-proofing for month routing + formatting template row
+  SHEETS_MONTH1: process.env.SHEETS_MONTH1 || '2025-09-01T00:00:00-07:00', // Month 1 = Sep 2025
+  SHEETS_TOTAL_MONTHS: Number(process.env.SHEETS_TOTAL_MONTHS || 24),
+  SHEETS_TEMPLATE_FORMAT_ROW: Number(process.env.SHEETS_TEMPLATE_FORMAT_ROW || 3), // <- use row 3's formatting
 };
 
 function warnMissingEnv(name) {
@@ -99,7 +104,6 @@ app.use(
     allowedHeaders: ['Content-Type', 'X-Automation-Secret'],
   })
 );
-
 app.options('*', cors());
 
 // Body parsers
@@ -149,7 +153,6 @@ function requireGoogle() {
   return google.calendar({ version: 'v3', auth: oauth2Client });
 }
 
-
 // NEW: Sheets helper (parallel to requireGoogle)
 function requireSheets() {
   if (!gTokens?.access_token && !gTokens?.refresh_token) {
@@ -194,10 +197,7 @@ function verifyAutomationSecret(req) {
 app.get('/api/health', (_req, res) => res.json({ ok: true, ts: Date.now() }));
 
 /* ============================================================================
- * WIX → WEBHOOK → SMS ALERT (from your Twilio business number)
- * - Accepts POST or GET
- * - Accepts: name OR firstName+lastName, email, phone, formName
- * - Verifies secret (header or body/query) if configured
+ * WIX → WEBHOOK → SMS ALERT
  * ==========================================================================*/
 app.all('/hooks/wix/new-lead', async (req, res, next) => {
   try {
@@ -233,7 +233,6 @@ app.all('/hooks/wix/new-lead', async (req, res, next) => {
 /* ============================================================================
  * TWILIO SMS
  * ==========================================================================*/
-// Incoming SMS (Twilio → your server)
 app.post('/sms', (req, res, next) => {
   try {
     const twiml = new MessagingResponse();
@@ -244,7 +243,6 @@ app.post('/sms', (req, res, next) => {
   }
 });
 
-// Outgoing SMS (your app → Twilio → recipient)
 app.post('/api/sms/send', async (req, res, next) => {
   try {
     const { to, body } = req.body || {};
@@ -334,7 +332,7 @@ app.get('/api/gcal/events', async (req, res, next) => {
     const params = { calendarId, maxResults: Number(maxResults) };
 
     if (syncToken) {
-      params.syncToken = syncToken; // incremental sync
+      params.syncToken = syncToken;
     } else {
       params.singleEvents = true;
       params.orderBy = 'startTime';
@@ -444,7 +442,6 @@ app.delete('/api/gcal/events/:eventId', async (req, res, next) => {
 
 /* ============================================================================
  * GOOGLE SHEETS AUTH (separate, safe)
- *  - Uses Sheets-specific redirect if set; otherwise falls back to main redirect
  * ==========================================================================*/
 app.get('/auth/google/sheets', (req, res, next) => {
   try {
@@ -455,19 +452,16 @@ app.get('/auth/google/sheets', (req, res, next) => {
         'https://www.googleapis.com/auth/spreadsheets',
         'https://www.googleapis.com/auth/drive.file',
       ],
-      prompt: 'consent', // ensures refresh_token if needed
+      prompt: 'consent',
       redirect_uri: CONFIG.GOOGLE_REDIRECT_URI_SHEETS || CONFIG.GOOGLE_REDIRECT_URI,
     });
 
-    // ✅ Log AFTER the URL is created
     console.log('SHEETS AUTH URL →', url);
-
     res.redirect(url);
   } catch (err) {
     next(err);
   }
 });
-
 
 app.get('/oauth2callback/sheets', async (req, res, next) => {
   try {
@@ -490,7 +484,6 @@ app.get('/oauth2callback/sheets', async (req, res, next) => {
     next(err);
   }
 });
-
 
 /* ============================================================================
  * GOOGLE SHEETS: tiny status/read/append endpoints (for testing)
@@ -574,7 +567,7 @@ app.post('/api/email/send', async (req, res) => {
       customArgs: customArgs && typeof customArgs === 'object' ? customArgs : undefined,
       asm: process.env.SENDGRID_MARKETING_GROUP_ID
         ? { groupId: Number(process.env.SENDGRID_MARKETING_GROUP_ID) }
-        : undefined, // unsubscribe group
+        : undefined,
       trackingSettings: {
         clickTracking: { enable: true },
         openTracking: { enable: true },
@@ -589,23 +582,38 @@ app.post('/api/email/send', async (req, res) => {
   }
 });
 
+/* ============================================================================
+ * SHEETS HELPERS (booking)
+ * ==========================================================================*/
+const pad2 = (n) => String(n).padStart(2, '0');
+const ymd = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+const hm  = (d) => `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+
+// Month routing (configurable for future)
+const MONTH1 = new Date(CONFIG.SHEETS_MONTH1);
+const TOTAL_MONTHS = CONFIG.SHEETS_TOTAL_MONTHS;
+function monthTabFor(startIso) {
+  const d = new Date(startIso);
+  const offset = (d.getFullYear() - MONTH1.getFullYear()) * 12 + (d.getMonth() - MONTH1.getMonth());
+  const m = offset + 1; // 1..TOTAL_MONTHS
+  if (m < 1 || m > TOTAL_MONTHS) throw new Error('Date outside M01–MXX window');
+  return `Events-M${String(m).padStart(2, '0')}`;
+}
 
 // === Upsert student into Student Master List (A=name, D=trackingNumber) ===
 async function upsertStudentInMaster({ name = '', trackingNumber = '' }) {
   const sheets = requireSheets();
   const spreadsheetId = CONFIG.SHEETS_SPREADSHEET_ID;
 
-  // Find tracking number in D
   const { data } = await sheets.spreadsheets.values.get({
     spreadsheetId,
-    range: "Student Master List!D2:D"
+    range: 'Student Master List!D2:D'
   });
   const rows = data.values || [];
   const idx = rows.findIndex(r => (r[0] || '').trim() === String(trackingNumber).trim());
 
   if (idx >= 0) {
-    // Exists → optionally update Name in column A on same row
-    const rowNum = idx + 2; // header offset
+    const rowNum = idx + 2;
     if (name) {
       await sheets.spreadsheets.values.update({
         spreadsheetId,
@@ -617,10 +625,9 @@ async function upsertStudentInMaster({ name = '', trackingNumber = '' }) {
     return rowNum;
   }
 
-  // Not found → append new row with Name in A and Tracking # in D
   await sheets.spreadsheets.values.append({
     spreadsheetId,
-    range: "Student Master List!A2:D2",
+    range: 'Student Master List!A2:D2',
     valueInputOption: 'USER_ENTERED',
     insertDataOption: 'INSERT_ROWS',
     requestBody: { values: [[name, '', '', trackingNumber]] }
@@ -629,87 +636,11 @@ async function upsertStudentInMaster({ name = '', trackingNumber = '' }) {
 }
 
 /* ============================================================================
- * BOOKING WEBHOOK → WRITE ONE ROW TO Events-M02!A:S
- *  - Puts Tracking Number in P (your link key)
- *  - B (Name) and T (Auto Title) are filled by your sheet formulas
+ * BOOKING WEBHOOK → WRITE ONE ROW TO Events-MXX!A:S (append from row 2)
+ *  - Puts Tracking Number in P (link key)
+ *  - B (Name) and T (Auto Title) fill via sheet formulas
+ *  - After append, copies FORMAT from row 3 to the new row (never header)
  * ==========================================================================*/
-// --- replaces the old TEST echo route ---
-const pad2 = (n) => String(n).padStart(2, '0');
-const ymd = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-const hm = (d) => `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
-// Choose Events-MXX tab by lesson date (Month 1 = Sep 2025 → Events-M01)
-const MONTH1 = new Date('2025-09-01T00:00:00-07:00'); // change if your Month 1 is different
-const TOTAL_MONTHS = 24;
-function monthTabFor(startIso) {
-  const d = new Date(startIso);
-  const offset = (d.getFullYear() - MONTH1.getFullYear()) * 12 + (d.getMonth() - MONTH1.getMonth());
-  const m = offset + 1; // 1..24
-  if (m < 1 || m > TOTAL_MONTHS) throw new Error('Date outside M01–M24 window');
-  return `Events-M${String(m).padStart(2, '0')}`;
-}
-const sheets = requireSheets(); // ensure 'sheets' is defined here
-
-// ✅ Normalize formatting on the row we just wrote
-try {
-  const spreadsheetId = CONFIG.SHEETS_SPREADSHEET_ID;
-
-  // 1) Get the numeric sheetId for the tab (e.g., "Events-M03")
-  const { data: meta } = await sheets.spreadsheets.get({
-    spreadsheetId,
-    fields: 'sheets(properties(sheetId,title))'
-  });
-  const sh = (meta.sheets || []).find(s => s.properties?.title === tab);
-  if (sh && rowNum) {
-    const sheetId = sh.properties.sheetId;
-
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId,
-      requestBody: {
-        requests: [
-          // A) Clear user-entered formatting on the new row (keeps validation/rules)
-          {
-            repeatCell: {
-              range: {
-                sheetId,
-                startRowIndex: rowNum - 1, // target row (0-based)
-                endRowIndex: rowNum,
-                startColumnIndex: 0,  // A
-                endColumnIndex: 24    // X (exclusive)
-              },
-              cell: { userEnteredFormat: {} },
-              fields: 'userEnteredFormat'
-            }
-          },
-          // B) Paste formatting from row 2 onto the new row
-          {
-            copyPaste: {
-              source: {
-                sheetId,
-                startRowIndex: 1,  // row 2 (0-based)
-                endRowIndex: 2,
-                startColumnIndex: 0,   // A
-                endColumnIndex: 24     // X (exclusive)
-              },
-              destination: {
-                sheetId,
-                startRowIndex: rowNum - 1,
-                endRowIndex: rowNum,
-                startColumnIndex: 0,
-                endColumnIndex: 24
-              },
-              pasteType: 'PASTE_FORMAT',
-              pasteOrientation: 'NORMAL'
-            }
-          }
-        ]
-      }
-    });
-  }
-} catch (e) {
-  console.warn('format normalize warn:', e?.message || e);
-}
-console.log('[booking] tab =', typeof tab, tab, 'rowNum =', rowNum);
-
 app.post('/api/hooks/booking', async (req, res, next) => {
   try {
     // (optional) enforce secret if set
@@ -736,9 +667,10 @@ app.post('/api/hooks/booking', async (req, res, next) => {
     // Ensure Student Master List has this Lighthouse student
     await upsertStudentInMaster({ name: (student?.name || ''), trackingNumber });
 
+    // Dates + tab choice
     const start = new Date(startIso);
     const end   = new Date(endIso);
-    const tab   = monthTabFor(startIso); // choose Events-MXX from date
+    const sheetTab = monthTabFor(startIso);
 
     // Build A:S (leave formula-driven/derived cols blank)
     const row = [
@@ -762,7 +694,7 @@ app.post('/api/hooks/booking', async (req, res, next) => {
       '',                    // R Lesson Count (parsed from S)
       programPlusCount       // S Program + Count (source)
       // T..W: formulas already on the sheet
-      // X: Program Code (we'll set below)
+      // X: Program Code (set below)
     ];
 
     const sheets = requireSheets();
@@ -771,7 +703,7 @@ app.post('/api/hooks/booking', async (req, res, next) => {
     // ALWAYS APPEND to first available row starting at row 2
     const { data } = await sheets.spreadsheets.values.append({
       spreadsheetId,
-      range: `${tab}!A2:S2`,
+      range: `${sheetTab}!A2:S2`,
       valueInputOption: 'USER_ENTERED',
       insertDataOption: 'INSERT_ROWS',
       requestBody: { values: [row] }
@@ -789,13 +721,13 @@ app.post('/api/hooks/booking', async (req, res, next) => {
     if (programCode && rowNum) {
       await sheets.spreadsheets.values.update({
         spreadsheetId,
-        range: `${tab}!X${rowNum}:X${rowNum}`,
+        range: `${sheetTab}!X${rowNum}:X${rowNum}`,
         valueInputOption: 'USER_ENTERED',
         requestBody: { values: [[programCode]] }
       });
     }
 
-    // ✅ Normalize formatting: clear any header styling, then paste row 2's format on this row
+    // ✅ Normalize formatting: paste row 3's format on this row (never header)
     try {
       if (rowNum) {
         // Get sheetId for the current tab
@@ -803,10 +735,10 @@ app.post('/api/hooks/booking', async (req, res, next) => {
           spreadsheetId,
           fields: 'sheets(properties(sheetId,title))'
         });
-        const sh = (meta.sheets || []).find(s => s.properties?.title === tab);
+        const sh = (meta.sheets || []).find(s => s.properties?.title === sheetTab);
         if (sh) {
           const sheetId = sh.properties.sheetId;
-
+          const tmplRow = Math.max(1, CONFIG.SHEETS_TEMPLATE_FORMAT_ROW) - 1; // 0-based index
           await sheets.spreadsheets.batchUpdate({
             spreadsheetId,
             requestBody: {
@@ -825,15 +757,15 @@ app.post('/api/hooks/booking', async (req, res, next) => {
                     fields: 'userEnteredFormat'
                   }
                 },
-                // B) Paste formatting from row 2 onto the new row
+                // B) Paste formatting from TEMPLATE_FORMAT_ROW (default row 3) onto the new row
                 {
                   copyPaste: {
                     source: {
                       sheetId,
-                      startRowIndex: 1,   // row 2 (0-based)
-                      endRowIndex: 2,
-                      startColumnIndex: 0,  // A
-                      endColumnIndex: 24    // X (exclusive)
+                      startRowIndex: tmplRow,   // row 3 (0-based) by default
+                      endRowIndex: tmplRow + 1,
+                      startColumnIndex: 0,      // A
+                      endColumnIndex: 24        // X (exclusive)
                     },
                     destination: {
                       sheetId,
@@ -855,13 +787,12 @@ app.post('/api/hooks/booking', async (req, res, next) => {
       console.warn('format normalize warn:', e?.message || e);
     }
 
-    res.json({ ok: true, wrote: `${tab}!A:S`, row: rowNum, trackingNumber, startIso, endIso, programCode });
+    res.json({ ok: true, wrote: `${sheetTab}!A:S`, row: rowNum, trackingNumber, startIso, endIso, programCode });
   } catch (err) {
     console.error('[booking webhook ERROR]', err);
     next(err);
   }
 });
-
 
 /* ============================================================================
  * 404 + ERROR HANDLERS
@@ -878,17 +809,10 @@ app.use((err, _req, res, _next) => {
   console.error('❌', status, message);
   res.status(status).json({ error: message });
 });
+
 /* ============================================================================
  * START
  * ==========================================================================*/
 app.listen(CONFIG.PORT, () => {
   console.log(`✅ ACT backend running on port ${CONFIG.PORT}`);
-});
-// DEBUG: show which redirect_uri + client your server will use for Sheets auth
-app.get('/debug/oauth/sheets', (req, res) => {
-  const redirectUri = (process.env.GOOGLE_REDIRECT_URI_SHEETS || process.env.GOOGLE_REDIRECT_URI || '').trim();
-  res.json({
-    clientId: process.env.GOOGLE_CLIENT_ID || null,
-    usingRedirectUri: redirectUri || null,
-  });
 });
