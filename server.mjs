@@ -671,6 +671,7 @@ app.post('/api/hooks/booking', async (req, res, next) => {
     assert(CONFIG.SHEETS_SPREADSHEET_ID, 'SHEETS_SPREADSHEET_ID not set', 500);
     assert(trackingNumber, 'trackingNumber missing');
     assert(startIso && endIso, 'startIso/endIso required');
+await upsertStudentInMaster({ name: (student?.name || ''), trackingNumber });
 
     const start = new Date(startIso);
     const end   = new Date(endIso);
