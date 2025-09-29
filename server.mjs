@@ -123,6 +123,18 @@ let gTokens = null;
 oauth2Client.on('tokens', (t) => {
   gTokens = { ...(gTokens || {}), ...t };
 });
+function loadTokensFromEnv() {
+  try {
+    if (process.env.GOOGLE_TOKENS_JSON) {
+      gTokens = JSON.parse(process.env.GOOGLE_TOKENS_JSON);
+      oauth2Client.setCredentials(gTokens);
+      console.log('Loaded Google tokens from env (Sheets/Calendar).');
+    }
+  } catch (e) {
+    console.error('Failed to parse GOOGLE_TOKENS_JSON:', e);
+  }
+}
+loadTokensFromEnv();
 
 function requireGoogle() {
   if (!gTokens?.access_token && !gTokens?.refresh_token) {
