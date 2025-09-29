@@ -95,8 +95,11 @@ app.use(
       return cb(new Error('Not allowed by CORS'));
     },
     credentials: true,
+    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'X-Automation-Secret'],
   })
 );
+
 app.options('*', cors());
 
 // Body parsers
