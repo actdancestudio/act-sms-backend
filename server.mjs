@@ -709,6 +709,157 @@ try {
   console.warn('format normalize warn:', e?.message || e);
 }
 
+app.post('/api/hooks/booking', async (req, res, next) => {
+  try {
+    // (optional) enforce secret if set
+    assert(verifyAutomationSecret(req), 'Unauthorized webhook', 401);
+
+    const {
+      trackingNumber,        // REQUIRED → goes to P
+      student = {},
+      teacher = '',
+      startIso,
+      endIso,
+      location = '',
+      frontBack = '',        // 'Front' or 'Back' → goes to I
+      title = '',            // optional manual title → goes to F
+      notes = '',            // goes to H
+      programPlusCount = '', // e.g., 'Spark, 2/4' → goes to S
+      programCode = ''       // goes to X
+    } = req.body || {};
+
+    assert(CONFIG.SHEETS_SPREADSHEET_ID, 'SHEETS_SPREADSHEET_ID not set', 500);
+    assert(trackingNumber, 'trackingNumber missing');
+    assert(startIso && endIso, 'startIso/endIso required');
+
+    // Ensure Student Master List has this Lighthouse student
+    await upsertStudentInMaster({ name: (student?.name || ''), trackingNumber });
+
+    const start = new Date(startIso);
+    const end   = new Date(endIso);
+    const tab   = monthTabFor(startIso); // choose Events-MXX from date
+
+    // Build A:S (leave formula-driven/derived cols blank)
+    const row = [
+      ymd(start),            // A Date
+      '',                    // B Name (auto via P on sheet)
+      teacher,               // C Teacher
+      hm(start),             // D Start Time
+      hm(end),               // E End Time
+      title,                 // F Manual Title (optional)
+      location,              // G Location
+      notes,                 // H Notes
+      frontBack,             // I Front/Back
+      '',                    // J Hours (sheet formula)
+      '',                    // K Back Dept (sheet formula from I)
+      '',                    // L Ren/Ext Lessons
+      '',                    // M Front Dept Lesson
+      '',                    // N (skip)
+      '',                    // O (Original/Extension/Renewal/No Sale) — leave blank
+      trackingNumber,        // P Tracking Number (the link key)
+      '',                    // Q Program (parsed from S)
+      '',                    // R Lesson Count (parsed from S)
+      programPlusCount       // S Program + Count (source)
+      // T..W: formulas already on the sheet
+      // X: Program Code (we'll set below)
+    ];
+
+    const sheets = requireSheets();
+    const spreadsheetId = CONFIG.SHEETS_SPREADSHEET_ID;
+
+    // ALWAYS APPEND to first available row starting at row 2
+    const { data } = await sheets.spreadsheets.values.append({
+      spreadsheetId,
+      range: `${tab}!A2:S2`,
+      valueInputOption: 'USER_ENTERED',
+      insertDataOption: 'INSERT_ROWS',
+      requestBody: { values: [row] }
+    });
+
+    // Determine the row we just wrote (e.g., 'Events-M03!A12:S12' → 12)
+    let rowNum = null;
+    const updatedRange = data?.updates?.updatedRange;
+    if (updatedRange) {
+      const leftCell = updatedRange.split('!')[1].split(':')[0]; // 'A12'
+      rowNum = Number(leftCell.replace(/[A-Z]/gi, ''));           // 12
+    }
+
+    // Write Program Code (X) on same row if provided
+    if (programCode && rowNum) {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: `${tab}!X${rowNum}:X${rowNum}`,
+        valueInputOption: 'USER_ENTERED',
+        requestBody: { values: [[programCode]] }
+      });
+    }
+
+    // ✅ Normalize formatting: clear any header styling, then paste row 2's format on this row
+    try {
+      if (rowNum) {
+        // Get sheetId for the current tab
+        const { data: meta } = await sheets.spreadsheets.get({
+          spreadsheetId,
+          fields: 'sheets(properties(sheetId,title))'
+        });
+        const sh = (meta.sheets || []).find(s => s.properties?.title === tab);
+        if (sh) {
+          const sheetId = sh.properties.sheetId;
+
+          await sheets.spreadsheets.batchUpdate({
+            spreadsheetId,
+            requestBody: {
+              requests: [
+                // A) Clear user-entered formatting on the new row (keeps validation/filters)
+                {
+                  repeatCell: {
+                    range: {
+                      sheetId,
+                      startRowIndex: rowNum - 1, // target row (0-based)
+                      endRowIndex: rowNum,
+                      startColumnIndex: 0,   // A
+                      endColumnIndex: 24     // X (exclusive)
+                    },
+                    cell: { userEnteredFormat: {} },
+                    fields: 'userEnteredFormat'
+                  }
+                },
+                // B) Paste formatting from row 2 onto the new row
+                {
+                  copyPaste: {
+                    source: {
+                      sheetId,
+                      startRowIndex: 1,   // row 2 (0-based)
+                      endRowIndex: 2,
+                      startColumnIndex: 0,  // A
+                      endColumnIndex: 24    // X (exclusive)
+                    },
+                    destination: {
+                      sheetId,
+                      startRowIndex: rowNum - 1,
+                      endRowIndex: rowNum,
+                      startColumnIndex: 0,
+                      endColumnIndex: 24
+                    },
+                    pasteType: 'PASTE_FORMAT',
+                    pasteOrientation: 'NORMAL'
+                  }
+                }
+              ]
+            }
+          });
+        }
+      }
+    } catch (e) {
+      console.warn('format normalize warn:', e?.message || e);
+    }
+
+    res.json({ ok: true, wrote: `${tab}!A:S`, row: rowNum, trackingNumber, startIso, endIso, programCode });
+  } catch (err) {
+    console.error('[booking webhook ERROR]', err);
+    next(err);
+  }
+});
 
 
 /* ============================================================================
