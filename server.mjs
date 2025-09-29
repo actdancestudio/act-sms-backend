@@ -708,7 +708,7 @@ app.post('/api/hooks/booking', async (req, res, next) => {
     // ALWAYS APPEND to first available row starting at row 2
     const { data } = await sheets.spreadsheets.values.append({
       spreadsheetId,
-      range: `${tab}!A2:S2`,
+      range: `${tab}!A:S`,
       valueInputOption: 'USER_ENTERED',
       insertDataOption: 'INSERT_ROWS',
       requestBody: { values: [row] }
