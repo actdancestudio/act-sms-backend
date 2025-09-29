@@ -478,12 +478,17 @@ app.get('/oauth2callback/sheets', async (req, res, next) => {
     // merge with any existing tokens (so Calendar keeps working)
     gTokens = { ...(gTokens || {}), ...tokens };
 
-    res.send('✅ Google Sheets connected (separate route). You can close this tab.');
+    // print tokens so you can persist them in Render
+    const blob = JSON.stringify(gTokens);
+    console.log('GOOGLE_TOKENS_JSON →', blob);
+
+    res.send('✅ Google Sheets connected. Copy GOOGLE_TOKENS_JSON from logs and save it to Render env.');
   } catch (err) {
     console.error('Sheets OAuth error:', err);
     next(err);
   }
 });
+
 
 /* ============================================================================
  * GOOGLE SHEETS: tiny status/read/append endpoints (for testing)
