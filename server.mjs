@@ -700,7 +700,7 @@ const tab = monthTabFor(startIso);
     const sheets = requireSheets();
     const { data } = await sheets.spreadsheets.values.append({
       spreadsheetId: CONFIG.SHEETS_SPREADSHEET_ID,
-      range: 'Events-M02!A2:S2',
+      range: `${tab}!A2:S2`,
       valueInputOption: 'USER_ENTERED',
       insertDataOption: 'INSERT_ROWS',
       requestBody: { values: [row] }
@@ -716,7 +716,7 @@ const tab = monthTabFor(startIso);
         if (rowNum) {
           await sheets.spreadsheets.values.update({
             spreadsheetId: CONFIG.SHEETS_SPREADSHEET_ID,
-            range: `Events-M02!X${rowNum}:X${rowNum}`,
+            range: `${tab}!X${rowNum}:X${rowNum}`,
             valueInputOption: 'USER_ENTERED',
             requestBody: { values: [[programCode]] }
           });
