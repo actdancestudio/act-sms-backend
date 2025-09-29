@@ -671,6 +671,7 @@ await upsertStudentInMaster({ name: (student?.name || ''), trackingNumber });
 
     const start = new Date(startIso);
     const end   = new Date(endIso);
+const tab = monthTabFor(startIso);
 
     // Write A:S only (preserves your formulas in T:W)
     const row = [
