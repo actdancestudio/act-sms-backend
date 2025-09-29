@@ -601,6 +601,43 @@ app.use((err, _req, res, _next) => {
   console.error('❌', status, message);
   res.status(status).json({ error: message });
 });
+// === Upsert student into Student Master List (A=name, D=trackingNumber) ===
+async function upsertStudentInMaster({ name = '', trackingNumber = '' }) {
+  const sheets = requireSheets();
+  const spreadsheetId = CONFIG.SHEETS_SPREADSHEET_ID;
+
+  // Find tracking number in D
+  const { data } = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: "Student Master List!D2:D"
+  });
+  const rows = data.values || [];
+  const idx = rows.findIndex(r => (r[0] || '').trim() === String(trackingNumber).trim());
+
+  if (idx >= 0) {
+    // Exists → optionally update Name in column A on same row
+    const rowNum = idx + 2; // header offset
+    if (name) {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: `Student Master List!A${rowNum}:A${rowNum}`,
+        valueInputOption: 'USER_ENTERED',
+        requestBody: { values: [[name]] }
+      });
+    }
+    return rowNum;
+  }
+
+  // Not found → append new row with Name in A and Tracking # in D
+  await sheets.spreadsheets.values.append({
+    spreadsheetId,
+    range: "Student Master List!A2:D2",
+    valueInputOption: 'USER_ENTERED',
+    insertDataOption: 'INSERT_ROWS',
+    requestBody: { values: [[name, '', '', trackingNumber]] }
+  });
+  return null;
+}
 
 /* ============================================================================
  * BOOKING WEBHOOK → WRITE ONE ROW TO Events-M02!A:S
