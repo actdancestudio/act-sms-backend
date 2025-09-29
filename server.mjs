@@ -1,4 +1,4 @@
-// server.mjs
+// server.mjs 
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
@@ -187,7 +187,7 @@ function verifyAutomationSecret(req) {
 /* ============================================================================
  * BASIC HEALTH
  * ==========================================================================*/
-res.send('✅ Google Sheets connected. Copy GOOGLE_TOKENS_JSON from logs and save it to Render env.');
+// (removed stray res.send(...) that was outside any route)
 app.get('/api/health', (_req, res) => res.json({ ok: true, ts: Date.now() }));
 
 /* ============================================================================
@@ -601,10 +601,79 @@ app.use((err, _req, res, _next) => {
   console.error('❌', status, message);
   res.status(status).json({ error: message });
 });
-// --- TEST: booking webhook route ---
-app.post('/api/hooks/booking', (req, res) => {
-  console.log('[booking webhook]', req.body);
-  res.json({ ok: true, echo: req.body });
+
+/* ============================================================================
+ * BOOKING WEBHOOK → WRITE ONE ROW TO Events-M02!A:S
+ *  - Puts Tracking Number in P (your link key)
+ *  - B (Name) and T (Auto Title) are filled by your sheet formulas
+ * ==========================================================================*/
+// --- replaces the old TEST echo route ---
+const pad2 = (n) => String(n).padStart(2, '0');
+const ymd = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+const hm = (d) => `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+
+app.post('/api/hooks/booking', async (req, res, next) => {
+  try {
+    // (optional) enforce secret if set
+    assert(verifyAutomationSecret(req), 'Unauthorized webhook', 401);
+
+    const {
+      trackingNumber,        // REQUIRED → goes to P
+      student = {},
+      teacher = '',
+      startIso,
+      endIso,
+      location = '',
+      frontBack = '',        // 'Front' or 'Back' → goes to I
+      title = '',            // optional manual title → goes to F
+      notes = '',            // goes to H
+      programPlusCount = ''  // e.g., 'ACT 20, 5/20' → goes to S
+    } = req.body || {};
+
+    assert(CONFIG.SHEETS_SPREADSHEET_ID, 'SHEETS_SPREADSHEET_ID not set', 500);
+    assert(trackingNumber, 'trackingNumber missing');
+    assert(startIso && endIso, 'startIso/endIso required');
+
+    const start = new Date(startIso);
+    const end = new Date(endIso);
+
+    const row = [
+      ymd(start),            // A Date
+      '',                    // B Name (auto via P using your formula)
+      teacher,               // C Teacher
+      hm(start),             // D Start Time
+      hm(end),               // E End Time
+      title,                 // F Manual Title (optional)
+      location,              // G Location
+      notes,                 // H Notes
+      frontBack,             // I Front/Back
+      '',                    // J Hours (sheet formula)
+      '',                    // K Back Dept (your formula from I)
+      '',                    // L Ren/Ext Lessons
+      '',                    // M Front Dept Lesson
+      '',                    // N (skip)
+      '',                    // O (Original/Extension/Renewal/No Sale) — leave blank
+      trackingNumber,        // P Tracking Number
+      '',                    // Q Program (parsed from S)
+      '',                    // R Lesson Count (parsed from S)
+      programPlusCount       // S Program + Count (source)
+      // T Auto Title is a formula on the sheet
+    ];
+
+    const sheets = requireSheets();
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: CONFIG.SHEETS_SPREADSHEET_ID,
+      range: 'Events-M02!A2:S2',
+      valueInputOption: 'USER_ENTERED',
+      insertDataOption: 'INSERT_ROWS',
+      requestBody: { values: [row] },
+    });
+
+    res.json({ ok: true, wrote: 'Events-M02!A:S', trackingNumber, startIso, endIso });
+  } catch (err) {
+    console.error('[booking webhook ERROR]', err);
+    next(err);
+  }
 });
 
 /* ============================================================================
