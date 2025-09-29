@@ -732,6 +732,9 @@ const tab = monthTabFor(startIso);
     next(err);
   }
 });
+app.get('/debug/google/tokens', (_req, res) => {
+  res.json(gTokens || { empty: true });
+});
 
 /* ============================================================================
  * 404 + ERROR HANDLERS
