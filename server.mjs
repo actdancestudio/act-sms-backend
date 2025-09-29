@@ -664,8 +664,7 @@ app.post('/api/hooks/booking', async (req, res, next) => {
       title = '',            // optional manual title → goes to F
       notes = '',            // goes to H
       programPlusCount = '', // e.g., 'Spark, 2/4' → goes to S
-      programCode = '',      // goes to X
-      targetRow = null       // ✨ NEW: set to a number (e.g., 8) to write that row
+      programCode = ''       // goes to X
     } = req.body || {};
 
     assert(CONFIG.SHEETS_SPREADSHEET_ID, 'SHEETS_SPREADSHEET_ID not set', 500);
@@ -705,31 +704,22 @@ app.post('/api/hooks/booking', async (req, res, next) => {
 
     const sheets = requireSheets();
     const spreadsheetId = CONFIG.SHEETS_SPREADSHEET_ID;
-    let rowNum = null;
 
-    if (Number(targetRow) >= 2) {
-      // Write exactly to the requested row (no append)
-      rowNum = Number(targetRow);
-      await sheets.spreadsheets.values.update({
-        spreadsheetId,
-        range: `${tab}!A${rowNum}:S${rowNum}`,
-        valueInputOption: 'USER_ENTERED',
-        requestBody: { values: [row] }
-      });
-    } else {
-      // Default behavior: append to first empty row
-      const { data } = await sheets.spreadsheets.values.append({
-        spreadsheetId,
-        range: `${tab}!A2:S2`,
-        valueInputOption: 'USER_ENTERED',
-        insertDataOption: 'INSERT_ROWS',
-        requestBody: { values: [row] }
-      });
-      const updatedRange = data?.updates?.updatedRange; // e.g., 'Events-M03!A12:S12'
-      if (updatedRange) {
-        const leftCell = updatedRange.split('!')[1].split(':')[0]; // 'A12'
-        rowNum = Number(leftCell.replace(/[A-Z]/gi, ''));           // 12
-      }
+    // ALWAYS APPEND to first available row starting at row 2
+    const { data } = await sheets.spreadsheets.values.append({
+      spreadsheetId,
+      range: `${tab}!A2:S2`,
+      valueInputOption: 'USER_ENTERED',
+      insertDataOption: 'INSERT_ROWS',
+      requestBody: { values: [row] }
+    });
+
+    // Determine the row we just wrote (for Program Code X)
+    let rowNum = null;
+    const updatedRange = data?.updates?.updatedRange; // e.g., 'Events-M03!A12:S12'
+    if (updatedRange) {
+      const leftCell = updatedRange.split('!')[1].split(':')[0]; // 'A12'
+      rowNum = Number(leftCell.replace(/[A-Z]/gi, ''));           // 12
     }
 
     // Write Program Code (X) on same row if provided
