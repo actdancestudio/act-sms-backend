@@ -708,6 +708,7 @@ try {
 } catch (e) {
   console.warn('format normalize warn:', e?.message || e);
 }
+console.log('[booking] tab =', typeof tab, tab, 'rowNum =', rowNum);
 
 app.post('/api/hooks/booking', async (req, res, next) => {
   try {
