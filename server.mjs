@@ -723,26 +723,52 @@ app.post('/api/hooks/booking', async (req, res, next) => {
       rowNum = Number(leftCell.replace(/[A-Z]/gi, ''));           // 12
     }
 
-    // Write Program Code (X) on same row if provided
-    try {
-      if (programCode && rowNum) {
-        await sheets.spreadsheets.values.update({
-          spreadsheetId,
-          range: `${tab}!X${rowNum}:X${rowNum}`,
-          valueInputOption: 'USER_ENTERED',
-          requestBody: { values: [[programCode]] }
-        });
-      }
-    } catch (e) {
-      console.warn('Program Code write warn:', e?.message || e);
-    }
+   // ⬇️ Force the new row to use row 2's formatting (not the header's)
+try {
+  const spreadsheetId = CONFIG.SHEETS_SPREADSHEET_ID;
 
-    res.json({ ok: true, wrote: `${tab}!A:S`, row: rowNum, trackingNumber, startIso, endIso, programCode });
-  } catch (err) {
-    console.error('[booking webhook ERROR]', err);
-    next(err);
+  // 1) Look up the numeric sheetId for the tab we just wrote to
+  const { data: meta } = await sheets.spreadsheets.get({
+    spreadsheetId,
+    fields: 'sheets(properties(sheetId,title))'
+  });
+  const sh = (meta.sheets || []).find(s => s.properties?.title === tab);
+  if (sh && rowNum) {
+    const sheetId = sh.properties.sheetId;
+
+    // 2) Copy only the FORMAT from A2:X2 → A{rowNum}:X{rowNum}
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: {
+        requests: [
+          {
+            copyPaste: {
+              source: {
+                sheetId,
+                startRowIndex: 1,  // row 2 (0-based)
+                endRowIndex: 2,    // exclusive
+                startColumnIndex: 0,  // A
+                endColumnIndex: 24    // X (exclusive)
+              },
+              destination: {
+                sheetId,
+                startRowIndex: rowNum - 1, // target row (0-based)
+                endRowIndex: rowNum,
+                startColumnIndex: 0,
+                endColumnIndex: 24
+              },
+              pasteType: 'PASTE_FORMAT',
+              pasteOrientation: 'NORMAL'
+            }
+          }
+        ]
+      }
+    });
   }
-});
+} catch (e) {
+  console.warn('Format copy warn:', e?.message || e);
+}
+
 
 
 /* ============================================================================
