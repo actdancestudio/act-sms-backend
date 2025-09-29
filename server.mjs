@@ -663,23 +663,26 @@ app.post('/api/hooks/booking', async (req, res, next) => {
       frontBack = '',        // 'Front' or 'Back' → goes to I
       title = '',            // optional manual title → goes to F
       notes = '',            // goes to H
-      programPlusCount = '', // e.g., 'ACT 20, 5/20' → goes to S
-      programCode = ''       // ✨ NEW → will be written to X
+      programPlusCount = '', // e.g., 'Spark, 2/4' → goes to S
+      programCode = '',      // goes to X
+      targetRow = null       // ✨ NEW: set to a number (e.g., 8) to write that row
     } = req.body || {};
 
     assert(CONFIG.SHEETS_SPREADSHEET_ID, 'SHEETS_SPREADSHEET_ID not set', 500);
     assert(trackingNumber, 'trackingNumber missing');
     assert(startIso && endIso, 'startIso/endIso required');
-await upsertStudentInMaster({ name: (student?.name || ''), trackingNumber });
+
+    // ensure Student Master List has this student from Lighthouse
+    await upsertStudentInMaster({ name: (student?.name || ''), trackingNumber });
 
     const start = new Date(startIso);
     const end   = new Date(endIso);
-const tab = monthTabFor(startIso);
+    const tab   = monthTabFor(startIso); // picks Events-MXX from date
 
-    // Write A:S only (preserves your formulas in T:W)
+    // A:S only (preserve your formulas in T:W)
     const row = [
       ymd(start),            // A Date
-      '',                    // B Name (auto via P using your formula)
+      '',                    // B Name (auto via P)
       teacher,               // C Teacher
       hm(start),             // D Start Time
       hm(end),               // E End Time
@@ -701,43 +704,55 @@ const tab = monthTabFor(startIso);
     ];
 
     const sheets = requireSheets();
-    const { data } = await sheets.spreadsheets.values.append({
-      spreadsheetId: CONFIG.SHEETS_SPREADSHEET_ID,
-      range: `${tab}!A2:S2`,
-      valueInputOption: 'USER_ENTERED',
-      insertDataOption: 'INSERT_ROWS',
-      requestBody: { values: [row] }
-    });
+    const spreadsheetId = CONFIG.SHEETS_SPREADSHEET_ID;
+    let rowNum = null;
 
-    // ✨ Write Program Code into column X on the same appended row (no formulas touched)
-    try {
-      if (programCode && data && data.updates && data.updates.updatedRange) {
-        // updatedRange example: 'Events-M02!A12:S12' → extract 12
-        const updatedRange = data.updates.updatedRange;
+    if (Number(targetRow) >= 2) {
+      // Write exactly to the requested row (no append)
+      rowNum = Number(targetRow);
+      await sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: `${tab}!A${rowNum}:S${rowNum}`,
+        valueInputOption: 'USER_ENTERED',
+        requestBody: { values: [row] }
+      });
+    } else {
+      // Default behavior: append to first empty row
+      const { data } = await sheets.spreadsheets.values.append({
+        spreadsheetId,
+        range: `${tab}!A2:S2`,
+        valueInputOption: 'USER_ENTERED',
+        insertDataOption: 'INSERT_ROWS',
+        requestBody: { values: [row] }
+      });
+      const updatedRange = data?.updates?.updatedRange; // e.g., 'Events-M03!A12:S12'
+      if (updatedRange) {
         const leftCell = updatedRange.split('!')[1].split(':')[0]; // 'A12'
-        const rowNum = Number(leftCell.replace(/[A-Z]/gi, ''));    // 12
-        if (rowNum) {
-          await sheets.spreadsheets.values.update({
-            spreadsheetId: CONFIG.SHEETS_SPREADSHEET_ID,
-            range: `${tab}!X${rowNum}:X${rowNum}`,
-            valueInputOption: 'USER_ENTERED',
-            requestBody: { values: [[programCode]] }
-          });
-        }
+        rowNum = Number(leftCell.replace(/[A-Z]/gi, ''));           // 12
+      }
+    }
+
+    // Write Program Code (X) on same row if provided
+    try {
+      if (programCode && rowNum) {
+        await sheets.spreadsheets.values.update({
+          spreadsheetId,
+          range: `${tab}!X${rowNum}:X${rowNum}`,
+          valueInputOption: 'USER_ENTERED',
+          requestBody: { values: [[programCode]] }
+        });
       }
     } catch (e) {
       console.warn('Program Code write warn:', e?.message || e);
     }
 
-    res.json({ ok: true, wrote: 'Events-M02!A:S', trackingNumber, startIso, endIso, programCode });
+    res.json({ ok: true, wrote: `${tab}!A:S`, row: rowNum, trackingNumber, startIso, endIso, programCode });
   } catch (err) {
     console.error('[booking webhook ERROR]', err);
     next(err);
   }
 });
-app.get('/debug/google/tokens', (_req, res) => {
-  res.json(gTokens || { empty: true });
-});
+
 
 /* ============================================================================
  * 404 + ERROR HANDLERS
