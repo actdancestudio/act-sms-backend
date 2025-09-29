@@ -145,6 +145,8 @@ function requireGoogle() {
   oauth2Client.setCredentials(gTokens);
   return google.calendar({ version: 'v3', auth: oauth2Client });
 }
+const blob = JSON.stringify(gTokens);
+console.log('GOOGLE_TOKENS_JSON →', blob);
 
 // NEW: Sheets helper (parallel to requireGoogle)
 function requireSheets() {
@@ -186,7 +188,7 @@ function verifyAutomationSecret(req) {
 /* ============================================================================
  * BASIC HEALTH
  * ==========================================================================*/
-app.get('/', (_req, res) => res.send('✅ ACT backend is running'));
+res.send('✅ Google Sheets connected. Copy GOOGLE_TOKENS_JSON from logs and save it to Render env.');
 app.get('/api/health', (_req, res) => res.json({ ok: true, ts: Date.now() }));
 
 /* ============================================================================
