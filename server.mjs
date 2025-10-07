@@ -829,3 +829,7 @@ app.use((err, _req, res, _next) => {
 app.listen(CONFIG.PORT, () => {
   console.log(`✅ ACT backend running on port ${CONFIG.PORT}`);
 });
+// add this after your other app.use(...) lines
+app.get('/sms', (req, res) => {
+  res.status(200).send('OK');
+});
