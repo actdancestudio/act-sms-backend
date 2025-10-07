@@ -833,3 +833,6 @@ app.listen(CONFIG.PORT, () => {
 app.get('/sms', (req, res) => {
   res.status(200).send('OK');
 });
+app.get('/__probe', (req, res) => {
+  res.status(200).send('PROBE_OK_ACT');
+});
