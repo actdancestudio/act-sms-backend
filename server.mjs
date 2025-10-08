@@ -5,6 +5,10 @@ import cors from 'cors';
 import twilio from 'twilio';
 import { google } from 'googleapis';
 import sgMail from '@sendgrid/mail';
+const stripeKey = process.env.STRIPE_SECRET_KEY || '';
+console.log(
+  `[STRIPE] Key status: ${stripeKey ? (stripeKey.startsWith('sk_test_') ? 'TEST key loaded' : 'NON-TEST key loaded') : 'MISSING'}`
+);
 
 /* ============================================================================
  * CONFIG
