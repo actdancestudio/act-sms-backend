@@ -105,6 +105,47 @@ app.use(
   })
 );
 app.options('*', cors());
+// --- Stripe webhook (SANDBOX) ---
+// PLACE THIS BEFORE app.use(express.json()) or any JSON/body parser
+import Stripe from 'stripe';
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+
+app.post(
+  '/stripe/webhook',
+  express.raw({ type: 'application/json' }), // raw body required for signature check
+  (req, res) => {
+    const sig = req.headers['stripe-signature'];
+
+    let event;
+    try {
+      event = stripe.webhooks.constructEvent(
+        req.body, // raw Buffer here
+        sig,
+        process.env.STRIPE_WEBHOOK_SECRET
+      );
+    } catch (err) {
+      console.error('⚠️  Webhook signature verification failed:', err.message);
+      return res.status(400).send(`Webhook Error: ${err.message}`);
+    }
+
+    // Handle the event
+    switch (event.type) {
+      case 'checkout.session.completed':
+        console.log('✅ checkout.session.completed');
+        break;
+      case 'payment_intent.succeeded':
+        console.log('✅ payment_intent.succeeded');
+        break;
+      case 'payment_intent.payment_failed':
+        console.log('❌ payment_intent.payment_failed');
+        break;
+      default:
+        console.log(`ℹ️ Unhandled event type: ${event.type}`);
+    }
+
+    return res.sendStatus(200);
+  }
+);
 
 // Body parsers
 app.use(express.json()); // JSON APIs
