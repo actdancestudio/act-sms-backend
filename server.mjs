@@ -886,6 +886,32 @@ app.post('/api/hooks/booking', async (req, res, next) => {
     next(err);
   }
 });
+/* ============================================================================
+ * STRIPE CUSTOMER: create or retrieve
+ * ==========================================================================*/
+app.post('/api/stripe/customer', async (req, res, next) => {
+  try {
+    const { email, name } = req.body || {};
+    if (!email) return res.status(400).json({ error: 'email_required' });
+
+    // 1️⃣ Search for existing customer
+    const existing = await stripe.customers.list({ email, limit: 1 });
+    if (existing.data.length > 0) {
+      return res.json({ ok: true, customer: existing.data[0] });
+    }
+
+    // 2️⃣ Create new customer
+    const customer = await stripe.customers.create({
+      email,
+      name: name || email.split('@')[0],
+    });
+
+    res.json({ ok: true, customer });
+  } catch (err) {
+    console.error('Create/retrieve customer error:', err);
+    next(err);
+  }
+});
 
 /* ============================================================================
  * 404 + ERROR HANDLERS  (keep AFTER all routes)
