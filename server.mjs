@@ -1,16 +1,17 @@
-// server.mjs 
+// server.mjs
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import twilio from 'twilio';
 import { google } from 'googleapis';
 import sgMail from '@sendgrid/mail';
-const stripeKey = process.env.STRIPE_SECRET_KEY || '';
-console.log(
-console.log('BOOT MARKER :: portal-route-check :: v1');
+import Stripe from 'stripe';
 
-  `[STRIPE] Key status: ${stripeKey ? (stripeKey.startsWith('sk_test_') ? 'TEST key loaded' : 'NON-TEST key loaded') : 'MISSING'}`
-);
+/* ============================================================================
+ * STRIPE: visibility of envs at boot (non-secret safe logs)
+ * ==========================================================================*/
+const stripeKey = process.env.STRIPE_SECRET_KEY || '';
+console.log(`[STRIPE] Key status: ${stripeKey ? (stripeKey.startsWith('sk_test_') ? 'TEST key loaded' : 'NON-TEST key loaded') : 'MISSING'}`);
 ['STRIPE_WEBHOOK_SECRET','STRIPE_PORTAL_RETURN_URL','STRIPE_CHECKOUT_SUCCESS_URL','STRIPE_CHECKOUT_CANCEL_URL']
   .forEach(k => console.log(`[ENV] ${k}: ${!!process.env[k]}`));
 
@@ -35,45 +36,39 @@ const CONFIG = {
   // Your personal phone to receive alerts
   ALERT_PHONE: process.env.ALERT_PHONE,
 
-  // Optional: shared secret for incoming automations/webhooks (Wix → this server)
-  // If set, Wix must send it as a header (X-Automation-Secret) OR in the body/query "secret"
+  // Optional: shared secret for incoming automations/webhooks
   AUTOMATION_SHARED_SECRET: process.env.AUTOMATION_SHARED_SECRET || '',
 
-  // Google OAuth / Calendar
+  // Google OAuth
   GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID,
   GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET,
-  GOOGLE_REDIRECT_URI: process.env.GOOGLE_REDIRECT_URI, // e.g. http://localhost:10000/oauth2callback
-
-  // NEW: Sheets-specific redirect so Calendar & Sheets can use different callbacks
-  GOOGLE_REDIRECT_URI_SHEETS: process.env.GOOGLE_REDIRECT_URI_SHEETS, // e.g. http://localhost:10000/oauth2callback/sheets
+  GOOGLE_REDIRECT_URI: process.env.GOOGLE_REDIRECT_URI, // e.g. https://act-sms-backend.onrender.com/oauth2/callback
+  GOOGLE_REDIRECT_URI_SHEETS: process.env.GOOGLE_REDIRECT_URI_SHEETS, // e.g. https://act-sms-backend.onrender.com/oauth2callback/sheets
 
   GCAL_CALENDAR_ID: process.env.GCAL_CALENDAR_ID || 'primary',
 
   // Sheets
   SHEETS_SPREADSHEET_ID: process.env.SHEETS_SPREADSHEET_ID,
 
-  // Future-proofing for month routing + formatting template row
-  SHEETS_MONTH1: process.env.SHEETS_MONTH1 || '2025-09-01T00:00:00-07:00', // Month 1 = Sep 2025
+  // Month routing + formatting template row
+  SHEETS_MONTH1: process.env.SHEETS_MONTH1 || '2025-09-01T00:00:00-07:00',
   SHEETS_TOTAL_MONTHS: Number(process.env.SHEETS_TOTAL_MONTHS || 24),
-  SHEETS_TEMPLATE_FORMAT_ROW: Number(process.env.SHEETS_TEMPLATE_FORMAT_ROW || 3), // <- use row 3's formatting
+  SHEETS_TEMPLATE_FORMAT_ROW: Number(process.env.SHEETS_TEMPLATE_FORMAT_ROW || 3),
 };
 
 function warnMissingEnv(name) {
   if (!CONFIG[name]) console.warn(`⚠️  Missing env: ${name}`);
 }
-// Required for SMS features
+// Warnings (non-fatal)
 ['TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_PHONE_NUMBER', 'ALERT_PHONE'].forEach(warnMissingEnv);
-// Nice-to-have for securing webhooks
 ['AUTOMATION_SHARED_SECRET'].forEach(warnMissingEnv);
-// Required only if you use Google OAuth
 ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_REDIRECT_URI'].forEach(warnMissingEnv);
-// Helpful warnings for email
-['SENDGRID_API_KEY', 'SENDGRID_FROM_EMAIL', 'SENDGRID_MARKETING_GROUP_ID'].forEach((k) =>
-  !process.env[k] && console.warn(`⚠️  Missing env: ${k}`)
-);
+['SENDGRID_API_KEY', 'SENDGRID_FROM_EMAIL', 'SENDGRID_FROM_NAME', 'SENDGRID_MARKETING_GROUP_ID'].forEach(k => {
+  if (!process.env[k]) console.warn(`⚠️  Missing env: ${k}`);
+});
 
 /* ============================================================================
- * APP & MIDDLEWARE
+ * APP & MIDDLEWARE (ORDER MATTERS)
  * ==========================================================================*/
 const app = express();
 
@@ -82,20 +77,12 @@ app.use((req, _res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
   next();
 });
-// DEBUG: show which redirect_uri + client your server will use for Sheets auth
-app.get('/debug/oauth/sheets', (req, res) => {
-  const redirectUri = (process.env.GOOGLE_REDIRECT_URI_SHEETS || process.env.GOOGLE_REDIRECT_URI || '').trim();
-  res.json({
-    clientId: process.env.GOOGLE_CLIENT_ID || null,
-    usingRedirectUri: redirectUri || null,
-  });
-});
 
-// CORS first
+// CORS
 const corsAllowList = new Set([CONFIG.FRONTEND_ORIGIN, ...CONFIG.DEV_ORIGINS]);
 const corsAllowRegexes = [
   /^https:\/\/([a-z0-9-]+\.)*base44\.com$/i,
-  /^https:\/\/([a-z0-9-]+\.)*base44\.app$/i, // optional, if you use .app previews
+  /^https:\/\/([a-z0-9-]+\.)*base44\.app$/i,
   /^https:\/\/(www\.)?lighthouse\.actdance\.ca$/i,
 ];
 app.use(
@@ -113,21 +100,20 @@ app.use(
   })
 );
 app.options('*', cors());
-// --- Stripe webhook (SANDBOX) ---
-// PLACE THIS BEFORE app.use(express.json()) or any JSON/body parser
-import Stripe from 'stripe';
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
+/* ============================================================================
+ * STRIPE (SANDBOX-FIRST): webhook BEFORE any JSON body parser
+ * ==========================================================================*/
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 app.post(
   '/stripe/webhook',
-  express.raw({ type: 'application/json' }), // raw body required for signature check
+  express.raw({ type: 'application/json' }),
   (req, res) => {
     const sig = req.headers['stripe-signature'];
-
     let event;
     try {
       event = stripe.webhooks.constructEvent(
-        req.body, // raw Buffer here
+        req.body, // raw Buffer
         sig,
         process.env.STRIPE_WEBHOOK_SECRET
       );
@@ -136,7 +122,6 @@ app.post(
       return res.status(400).send(`Webhook Error: ${err.message}`);
     }
 
-    // Handle the event
     switch (event.type) {
       case 'checkout.session.completed':
         console.log('✅ checkout.session.completed');
@@ -154,17 +139,43 @@ app.post(
     return res.sendStatus(200);
   }
 );
-// Parse JSON for normal API routes (keep this BELOW the webhook)
-app.use(express.json());
-app.get('/__ping', (req, res) => res.json({ ok: true, where: 'after-json', time: new Date().toISOString() }));
 
-// Body parsers
-app.use(express.json()); // JSON APIs
-app.use(express.urlencoded({ extended: false })); // Twilio webhooks & form posts
-// Create a sandbox Customer Portal session
+// NOW enable JSON/form parsers for normal routes (keep BELOW webhook)
+app.use(express.json());
+app.use(express.urlencoded({ extended: false }));
+
+// Quick pings
+app.get('/__ping', (_req, res) => res.json({ ok: true, where: 'after-json', time: new Date().toISOString() }));
+app.get('/api/health', (_req, res) => res.json({ ok: true, ts: Date.now() }));
+
+/* ============================================================================
+ * STRIPE: Checkout + Customer Portal routes
+ * ==========================================================================*/
+// Create a sandbox Checkout session (in-house POS)
+app.post('/api/stripe/checkout', async (req, res) => {
+  try {
+    const { priceId, quantity = 1, customer, mode = 'payment' } = req.body || {};
+    if (!priceId) return res.status(400).json({ error: 'missing_priceId' });
+
+    const session = await stripe.checkout.sessions.create({
+      mode,                                      // 'payment' or 'subscription'
+      customer,                                  // optional existing customer id
+      line_items: [{ price: priceId, quantity }],
+      success_url: process.env.STRIPE_CHECKOUT_SUCCESS_URL + '&session_id={CHECKOUT_SESSION_ID}',
+      cancel_url: process.env.STRIPE_CHECKOUT_CANCEL_URL,
+      allow_promotion_codes: true,
+    });
+
+    return res.json({ id: session.id, url: session.url });
+  } catch (err) {
+    console.error('Create Checkout error:', err);
+    return res.status(500).json({ error: 'checkout_failed' });
+  }
+});
+
+// Create a sandbox Customer Portal session (POST)
 app.post('/api/stripe/portal', async (req, res) => {
   try {
-    // allow GET with query for quick manual testing
     const customer = req.body?.customer || req.query?.customer;
     if (!customer) return res.status(400).json({ error: 'missing_customer_id' });
 
@@ -172,7 +183,15 @@ app.post('/api/stripe/portal', async (req, res) => {
       customer,
       return_url: process.env.STRIPE_PORTAL_RETURN_URL,
     });
-// GET version for quick manual testing in a browser
+
+    return res.json({ url: session.url });
+  } catch (err) {
+    console.error('Create Portal session error:', err);
+    return res.status(500).json({ error: 'portal_failed' });
+  }
+});
+
+// Same portal route as GET for easy manual testing in browser
 app.get('/api/stripe/portal', async (req, res) => {
   try {
     const customer = req.query?.customer;
@@ -190,13 +209,6 @@ app.get('/api/stripe/portal', async (req, res) => {
   }
 });
 
-    return res.json({ url: session.url });
-  } catch (err) {
-    console.error('Create Portal session error:', err);
-    return res.status(500).json({ error: 'portal_failed' });
-  }
-});
-
 /* ============================================================================
  * TWILIO SETUP
  * ==========================================================================*/
@@ -205,7 +217,6 @@ const { MessagingResponse } = twilio.twiml;
 
 /* ============================================================================
  * GOOGLE OAUTH / CALENDAR
- *  - In-memory token store for simplicity (swap for DB when ready)
  * ==========================================================================*/
 const oauth2Client = new google.auth.OAuth2(
   CONFIG.GOOGLE_CLIENT_ID,
@@ -214,9 +225,8 @@ const oauth2Client = new google.auth.OAuth2(
 );
 
 let gTokens = null;
-oauth2Client.on('tokens', (t) => {
-  gTokens = { ...(gTokens || {}), ...t };
-});
+oauth2Client.on('tokens', (t) => { gTokens = { ...(gTokens || {}), ...t }; });
+
 function loadTokensFromEnv() {
   try {
     if (process.env.GOOGLE_TOKENS_JSON) {
@@ -239,8 +249,6 @@ function requireGoogle() {
   oauth2Client.setCredentials(gTokens);
   return google.calendar({ version: 'v3', auth: oauth2Client });
 }
-
-// NEW: Sheets helper (parallel to requireGoogle)
 function requireSheets() {
   if (!gTokens?.access_token && !gTokens?.refresh_token) {
     const err = new Error('Google not connected. Visit /auth/google/sheets to connect Sheets.');
@@ -261,13 +269,9 @@ function assert(condition, message, status = 400) {
     throw err;
   }
 }
-
-// Accept payload from JSON body OR query string (?key=value)
 function getPayload(req) {
   return (req.body && Object.keys(req.body).length) ? req.body : req.query;
 }
-
-// Accept secret in header or body/query; if no secret configured, do not enforce
 function verifyAutomationSecret(req) {
   if (!CONFIG.AUTOMATION_SHARED_SECRET) return true;
   const header = req.header('X-Automation-Secret') || req.header('x-automation-secret');
@@ -278,10 +282,12 @@ function verifyAutomationSecret(req) {
 }
 
 /* ============================================================================
- * BASIC HEALTH
+ * DEBUG / OAUTH UTIL
  * ==========================================================================*/
-// (removed stray res.send(...) that was outside any route)
-app.get('/api/health', (_req, res) => res.json({ ok: true, ts: Date.now() }));
+app.get('/debug/oauth/sheets', (req, res) => {
+  const redirectUri = (process.env.GOOGLE_REDIRECT_URI_SHEETS || process.env.GOOGLE_REDIRECT_URI || '').trim();
+  res.json({ clientId: process.env.GOOGLE_CLIENT_ID || null, usingRedirectUri: redirectUri || null });
+});
 
 /* ============================================================================
  * WIX → WEBHOOK → SMS ALERT
@@ -346,6 +352,10 @@ app.post('/api/sms/send', async (req, res, next) => {
   }
 });
 
+// Simple GET probes (before 404)
+app.get('/sms', (_req, res) => res.status(200).send('OK'));
+app.get('/__probe', (_req, res) => res.status(200).send('PROBE_OK_ACT'));
+
 /* ============================================================================
  * GOOGLE OAUTH FLOW (Calendar)
  * ==========================================================================*/
@@ -391,7 +401,7 @@ app.get('/api/gcal/status', (_req, res) => {
 });
 
 /* ============================================================================
- * GOOGLE CALENDAR: LIST / CREATE / UPDATE / DELETE
+ * GOOGLE CALENDAR: CRUD
  * ==========================================================================*/
 app.get('/api/gcal/calendars', async (_req, res, next) => {
   try {
@@ -464,18 +474,8 @@ app.post('/api/gcal/events', async (req, res, next) => {
     const { data } = await calendar.events.insert({
       calendarId,
       requestBody: {
-        summary,
-        description,
-        location,
-        start,
-        end,
-        attendees,
-        reminders,
-        colorId,
-        extendedProperties,
-        conferenceData,
-        transparency,
-        visibility,
+        summary, description, location, start, end, attendees, reminders, colorId,
+        extendedProperties, conferenceData, transparency, visibility,
       },
       sendUpdates: 'all',
       conferenceDataVersion: conferenceData ? 1 : 0,
@@ -495,10 +495,7 @@ app.patch('/api/gcal/events/:eventId', async (req, res, next) => {
     assert(eventId, 'eventId required');
 
     const { data } = await calendar.events.patch({
-      calendarId,
-      eventId,
-      requestBody: patchFields,
-      sendUpdates: 'all',
+      calendarId, eventId, requestBody: patchFields, sendUpdates: 'all',
       conferenceDataVersion: patchFields.conferenceData ? 1 : 0,
     });
 
@@ -515,12 +512,7 @@ app.delete('/api/gcal/events/:eventId', async (req, res, next) => {
     const { calendarId = CONFIG.GCAL_CALENDAR_ID } = req.query;
     assert(eventId, 'eventId required');
 
-    await calendar.events.delete({
-      calendarId,
-      eventId,
-      sendUpdates: 'all',
-    });
-
+    await calendar.events.delete({ calendarId, eventId, sendUpdates: 'all' });
     res.json({ ok: true, deleted: eventId });
   } catch (err) {
     next(err);
@@ -528,13 +520,13 @@ app.delete('/api/gcal/events/:eventId', async (req, res, next) => {
 });
 
 /* ============================================================================
- * GOOGLE SHEETS AUTH (separate, safe)
+ * GOOGLE SHEETS AUTH (separate callback)
  * ==========================================================================*/
 app.get('/auth/google/sheets', (req, res, next) => {
   try {
     const url = oauth2Client.generateAuthUrl({
       access_type: 'offline',
-      include_granted_scopes: true, // incremental auth; keeps your Calendar access
+      include_granted_scopes: true,
       scope: [
         'https://www.googleapis.com/auth/spreadsheets',
         'https://www.googleapis.com/auth/drive.file',
@@ -542,7 +534,6 @@ app.get('/auth/google/sheets', (req, res, next) => {
       prompt: 'consent',
       redirect_uri: CONFIG.GOOGLE_REDIRECT_URI_SHEETS || CONFIG.GOOGLE_REDIRECT_URI,
     });
-
     console.log('SHEETS AUTH URL →', url);
     res.redirect(url);
   } catch (err) {
@@ -557,11 +548,8 @@ app.get('/oauth2callback/sheets', async (req, res, next) => {
 
     const { tokens } = await oauth2Client.getToken({ code, redirect_uri: redirectUri });
     oauth2Client.setCredentials(tokens);
-
-    // merge with any existing tokens (so Calendar keeps working)
     gTokens = { ...(gTokens || {}), ...tokens };
 
-    // print tokens so you can persist them in Render
     const blob = JSON.stringify(gTokens);
     console.log('GOOGLE_TOKENS_JSON →', blob);
 
@@ -573,7 +561,7 @@ app.get('/oauth2callback/sheets', async (req, res, next) => {
 });
 
 /* ============================================================================
- * GOOGLE SHEETS: tiny status/read/append endpoints (for testing)
+ * GOOGLE SHEETS: status/read/append
  * ==========================================================================*/
 app.get('/api/sheets/status', (_req, res) => {
   const connected = !!(gTokens?.access_token || gTokens?.refresh_token);
@@ -600,8 +588,7 @@ app.post('/api/sheets/append', async (req, res, next) => {
     const values = Array.isArray(req.body?.values) ? req.body.values : null;
     assert(values && Array.isArray(values[0]), 'values must be a 2D array, e.g. [["A","B"]]');
     const { data } = await sheets.spreadsheets.values.append({
-      spreadsheetId,
-      range,
+      spreadsheetId, range,
       valueInputOption: 'USER_ENTERED',
       insertDataOption: 'INSERT_ROWS',
       requestBody: { values },
@@ -618,22 +605,19 @@ app.post('/api/sheets/append', async (req, res, next) => {
 sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
 /* ============================================================================
- * EMAIL ENDPOINT (enhanced)
+ * EMAIL ENDPOINT
  * ==========================================================================*/
 app.post('/api/email/send', async (req, res) => {
   try {
     let { to, subject, html, text, categories = [], customArgs = {} } = req.body || {};
-
     if (!to || !subject || (!html && !text)) {
       return res.status(400).json({ ok: false, error: 'to, subject, and html or text are required' });
     }
 
-    // Allow single string, comma-separated, or array
     const recipients = Array.isArray(to)
       ? to
       : String(to).split(',').map((s) => s.trim()).filter(Boolean);
 
-    // Auto-append compliant footer with Unsubscribe (if not already present)
     if (html && !html.includes('<%asm_group_unsubscribe_raw_url%>')) {
       html += `
         <hr>
@@ -670,13 +654,12 @@ app.post('/api/email/send', async (req, res) => {
 });
 
 /* ============================================================================
- * SHEETS HELPERS (booking)
+ * SHEETS HELPERS (time/rows)
  * ==========================================================================*/
 const pad2 = (n) => String(n).padStart(2, '0');
 const ymd = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 const hm  = (d) => `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 
-// Month routing (configurable for future)
 const MONTH1 = new Date(CONFIG.SHEETS_MONTH1);
 const TOTAL_MONTHS = CONFIG.SHEETS_TOTAL_MONTHS;
 function monthTabFor(startIso) {
@@ -687,7 +670,7 @@ function monthTabFor(startIso) {
   return `Events-M${String(m).padStart(2, '0')}`;
 }
 
-// === Upsert student into Student Master List (A=name, D=trackingNumber) ===
+// === Upsert student into Student Master List (A=name, D=trackingNumber)
 async function upsertStudentInMaster({ name = '', trackingNumber = '' }) {
   const sheets = requireSheets();
   const spreadsheetId = CONFIG.SHEETS_SPREADSHEET_ID;
@@ -723,101 +706,84 @@ async function upsertStudentInMaster({ name = '', trackingNumber = '' }) {
 }
 
 /* ============================================================================
- * BOOKING WEBHOOK → WRITE ONE ROW TO Events-MXX!A:S (append from row 2)
- *  - Puts Tracking Number in P (link key)
- *  - B (Name) and T (Auto Title) fill via sheet formulas
- *  - After append, copies FORMAT from row 3 to the new row (never header)
+ * BOOKING WEBHOOK → WRITE ONE ROW TO Events-MXX!A:S
  * ==========================================================================*/
 app.post('/api/hooks/booking', async (req, res, next) => {
   try {
     // (optional) enforce secret if set
-    assert(verifyAutomationSecret(req), 'Unauthorized webhook', 401);
+    if (!verifyAutomationSecret(req)) return res.status(401).json({ error: 'Unauthorized webhook' });
 
     const {
-      trackingNumber,        // REQUIRED → goes to P
+      trackingNumber,
       student = {},
       teacher = '',
       startIso,
       endIso,
       location = '',
-      frontBack = '',        // 'Front' or 'Back' → goes to I
-      title = '',            // optional manual title → goes to F
-      notes = '',            // goes to H
-      programPlusCount = '', // e.g., 'Spark, 2/4' → goes to S
-      programCode = ''       // goes to X
+      frontBack = '',
+      title = '',
+      notes = '',
+      programPlusCount = '',
+      programCode = ''
     } = req.body || {};
 
-    assert(CONFIG.SHEETS_SPREADSHEET_ID, 'SHEETS_SPREADSHEET_ID not set', 500);
-    assert(trackingNumber, 'trackingNumber missing');
-    assert(startIso && endIso, 'startIso/endIso required');
+    if (!CONFIG.SHEETS_SPREADSHEET_ID) return res.status(500).json({ error: 'SHEETS_SPREADSHEET_ID not set' });
+    if (!trackingNumber) return res.status(400).json({ error: 'trackingNumber missing' });
+    if (!startIso || !endIso) return res.status(400).json({ error: 'startIso/endIso required' });
 
-    // Ensure Student Master List has this Lighthouse student
     await upsertStudentInMaster({ name: (student?.name || ''), trackingNumber });
 
-    // Dates + tab choice
     const start = new Date(startIso);
     const end   = new Date(endIso);
     const sheetTab = monthTabFor(startIso);
 
-    // Build A:S (leave formula-driven/derived cols blank)
     const row = [
-      ymd(start),            // A Date
-      '',                    // B Name (auto via P on sheet)
-      teacher,               // C Teacher
-      hm(start),             // D Start Time
-      hm(end),               // E End Time
-      title,                 // F Manual Title (optional)
-      location,              // G Location
-      notes,                 // H Notes
-      frontBack,             // I Front/Back
-      '',                    // J Hours (sheet formula)
-      '',                    // K Back Dept (sheet formula from I)
-      '',                    // L Ren/Ext Lessons
-      '',                    // M Front Dept Lesson
-      '',                    // N (skip)
-      '',                    // O (Original/Extension/Renewal/No Sale) — leave blank
-      trackingNumber,        // P Tracking Number (the link key)
-      '',                    // Q Program (parsed from S)
-      '',                    // R Lesson Count (parsed from S)
-      programPlusCount       // S Program + Count (source)
-      // T..W: formulas already on the sheet
-      // X: Program Code (set below)
+      ymd(start),   // A Date
+      '',          // B Name (auto via P on sheet)
+      teacher,     // C Teacher
+      hm(start),   // D Start Time
+      hm(end),     // E End Time
+      title,       // F Manual Title
+      location,    // G Location
+      notes,       // H Notes
+      frontBack,   // I Front/Back
+      '', '', '', '', '', '', // J..O sheet formulas/derived
+      trackingNumber, // P Tracking Number
+      '', '',         // Q..R parsed on sheet
+      programPlusCount // S Program + Count
+      // X (Program Code) set below if provided
     ];
 
     const sheets = requireSheets();
     const spreadsheetId = CONFIG.SHEETS_SPREADSHEET_ID;
 
-   // ALWAYS WRITE starting from row 2, with optional override to a specific row
-let rowNum = null;
-const targetRow = Number(req.body?.targetRow || 0);
+    // Write to row (append by default; allow override via targetRow)
+    let rowNum = null;
+    const targetRow = Number(req.body?.targetRow || 0);
+    if (targetRow >= 2) {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: `${sheetTab}!A${targetRow}:S${targetRow}`,
+        valueInputOption: 'USER_ENTERED',
+        requestBody: { values: [row] }
+      });
+      rowNum = targetRow;
+    } else {
+      const { data } = await sheets.spreadsheets.values.append({
+        spreadsheetId,
+        range: `${sheetTab}!A2:S2`,
+        valueInputOption: 'USER_ENTERED',
+        insertDataOption: 'INSERT_ROWS',
+        requestBody: { values: [row] }
+      });
+      const updatedRange = data?.updates?.updatedRange; // e.g., 'Events-M03!A12:S12'
+      if (updatedRange) {
+        const leftCell = updatedRange.split('!')[1].split(':')[0]; // 'A12'
+        rowNum = Number(leftCell.replace(/[A-Z]/gi, ''));
+      }
+    }
 
-if (targetRow >= 2) {
-  // Write directly into a specific row (e.g., 3)
-  await sheets.spreadsheets.values.update({
-    spreadsheetId,
-    range: `${sheetTab}!A${targetRow}:S${targetRow}`,
-    valueInputOption: 'USER_ENTERED',
-    requestBody: { values: [row] }
-  });
-  rowNum = targetRow;
-} else {
-  // Default: append to first available row below the header
-  const { data } = await sheets.spreadsheets.values.append({
-    spreadsheetId,
-    range: `${sheetTab}!A2:S2`,
-    valueInputOption: 'USER_ENTERED',
-    insertDataOption: 'INSERT_ROWS',
-    requestBody: { values: [row] }
-  });
-  const updatedRange = data?.updates?.updatedRange; // e.g., 'Events-M03!A12:S12'
-  if (updatedRange) {
-    const leftCell = updatedRange.split('!')[1].split(':')[0]; // 'A12'
-    rowNum = Number(leftCell.replace(/[A-Z]/gi, ''));
-  }
-}
-
-
-    // Write Program Code (X) on same row if provided
+    // Write Program Code (X) if provided
     if (programCode && rowNum) {
       await sheets.spreadsheets.values.update({
         spreadsheetId,
@@ -827,10 +793,9 @@ if (targetRow >= 2) {
       });
     }
 
-    // ✅ Normalize formatting: paste row 3's format on this row (never header)
+    // Normalize formatting from row 3 (template)
     try {
       if (rowNum) {
-        // Get sheetId for the current tab
         const { data: meta } = await sheets.spreadsheets.get({
           spreadsheetId,
           fields: 'sheets(properties(sheetId,title))'
@@ -838,34 +803,32 @@ if (targetRow >= 2) {
         const sh = (meta.sheets || []).find(s => s.properties?.title === sheetTab);
         if (sh) {
           const sheetId = sh.properties.sheetId;
-          const tmplRow = Math.max(1, CONFIG.SHEETS_TEMPLATE_FORMAT_ROW) - 1; // 0-based index
+          const tmplRow = Math.max(1, CONFIG.SHEETS_TEMPLATE_FORMAT_ROW) - 1; // 0-based
           await sheets.spreadsheets.batchUpdate({
             spreadsheetId,
             requestBody: {
               requests: [
-                // A) Clear user-entered formatting on the new row (keeps validation/filters)
                 {
                   repeatCell: {
                     range: {
                       sheetId,
-                      startRowIndex: rowNum - 1, // target row (0-based)
+                      startRowIndex: rowNum - 1,
                       endRowIndex: rowNum,
-                      startColumnIndex: 0,   // A
-                      endColumnIndex: 24     // X (exclusive)
+                      startColumnIndex: 0, // A
+                      endColumnIndex: 24   // X (exclusive)
                     },
                     cell: { userEnteredFormat: {} },
                     fields: 'userEnteredFormat'
                   }
                 },
-                // B) Paste formatting from TEMPLATE_FORMAT_ROW (default row 3) onto the new row
                 {
                   copyPaste: {
                     source: {
                       sheetId,
-                      startRowIndex: tmplRow,   // row 3 (0-based) by default
+                      startRowIndex: tmplRow,
                       endRowIndex: tmplRow + 1,
-                      startColumnIndex: 0,      // A
-                      endColumnIndex: 24        // X (exclusive)
+                      startColumnIndex: 0,
+                      endColumnIndex: 24
                     },
                     destination: {
                       sheetId,
@@ -895,7 +858,7 @@ if (targetRow >= 2) {
 });
 
 /* ============================================================================
- * 404 + ERROR HANDLERS
+ * 404 + ERROR HANDLERS  (keep AFTER all routes)
  * ==========================================================================*/
 app.use((req, res) => {
   res.status(404).json({ error: 'Not Found', path: req.path });
@@ -915,11 +878,4 @@ app.use((err, _req, res, _next) => {
  * ==========================================================================*/
 app.listen(CONFIG.PORT, () => {
   console.log(`✅ ACT backend running on port ${CONFIG.PORT}`);
-});
-// add this after your other app.use(...) lines
-app.get('/sms', (req, res) => {
-  res.status(200).send('OK');
-});
-app.get('/__probe', (req, res) => {
-  res.status(200).send('PROBE_OK_ACT');
 });
