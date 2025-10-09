@@ -9,6 +9,8 @@ const stripeKey = process.env.STRIPE_SECRET_KEY || '';
 console.log(
   `[STRIPE] Key status: ${stripeKey ? (stripeKey.startsWith('sk_test_') ? 'TEST key loaded' : 'NON-TEST key loaded') : 'MISSING'}`
 );
+['STRIPE_WEBHOOK_SECRET','STRIPE_PORTAL_RETURN_URL','STRIPE_CHECKOUT_SUCCESS_URL','STRIPE_CHECKOUT_CANCEL_URL']
+  .forEach(k => console.log(`[ENV] ${k}: ${!!process.env[k]}`));
 
 /* ============================================================================
  * CONFIG
@@ -150,10 +152,30 @@ app.post(
     return res.sendStatus(200);
   }
 );
+// Parse JSON for normal API routes (keep this BELOW the webhook)
+app.use(express.json());
 
 // Body parsers
 app.use(express.json()); // JSON APIs
 app.use(express.urlencoded({ extended: false })); // Twilio webhooks & form posts
+// Create a sandbox Customer Portal session
+app.post('/api/stripe/portal', async (req, res) => {
+  try {
+    // allow GET with query for quick manual testing
+    const customer = req.body?.customer || req.query?.customer;
+    if (!customer) return res.status(400).json({ error: 'missing_customer_id' });
+
+    const session = await stripe.billingPortal.sessions.create({
+      customer,
+      return_url: process.env.STRIPE_PORTAL_RETURN_URL,
+    });
+
+    return res.json({ url: session.url });
+  } catch (err) {
+    console.error('Create Portal session error:', err);
+    return res.status(500).json({ error: 'portal_failed' });
+  }
+});
 
 /* ============================================================================
  * TWILIO SETUP
