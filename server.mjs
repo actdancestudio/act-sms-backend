@@ -7,6 +7,8 @@ import { google } from 'googleapis';
 import sgMail from '@sendgrid/mail';
 const stripeKey = process.env.STRIPE_SECRET_KEY || '';
 console.log(
+console.log('BOOT MARKER :: portal-route-check :: v1');
+
   `[STRIPE] Key status: ${stripeKey ? (stripeKey.startsWith('sk_test_') ? 'TEST key loaded' : 'NON-TEST key loaded') : 'MISSING'}`
 );
 ['STRIPE_WEBHOOK_SECRET','STRIPE_PORTAL_RETURN_URL','STRIPE_CHECKOUT_SUCCESS_URL','STRIPE_CHECKOUT_CANCEL_URL']
@@ -154,6 +156,7 @@ app.post(
 );
 // Parse JSON for normal API routes (keep this BELOW the webhook)
 app.use(express.json());
+app.get('/__ping', (req, res) => res.json({ ok: true, where: 'after-json', time: new Date().toISOString() }));
 
 // Body parsers
 app.use(express.json()); // JSON APIs
@@ -169,6 +172,23 @@ app.post('/api/stripe/portal', async (req, res) => {
       customer,
       return_url: process.env.STRIPE_PORTAL_RETURN_URL,
     });
+// GET version for quick manual testing in a browser
+app.get('/api/stripe/portal', async (req, res) => {
+  try {
+    const customer = req.query?.customer;
+    if (!customer) return res.status(400).json({ error: 'missing_customer_id' });
+
+    const session = await stripe.billingPortal.sessions.create({
+      customer,
+      return_url: process.env.STRIPE_PORTAL_RETURN_URL,
+    });
+
+    return res.json({ url: session.url });
+  } catch (err) {
+    console.error('Create Portal session (GET) error:', err);
+    return res.status(500).json({ error: 'portal_failed' });
+  }
+});
 
     return res.json({ url: session.url });
   } catch (err) {
