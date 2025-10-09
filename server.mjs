@@ -173,40 +173,70 @@ app.post('/api/stripe/checkout', async (req, res) => {
   }
 });
 
-// Create a sandbox Customer Portal session (POST)
+/* ---- UPDATED: clearer Stripe portal errors without changing success behavior ---- */
 app.post('/api/stripe/portal', async (req, res) => {
   try {
+    const returnUrl = (process.env.STRIPE_PORTAL_RETURN_URL || '').trim();
+    if (!returnUrl) {
+      return res.status(500).json({ error: 'missing_STRIPE_PORTAL_RETURN_URL' });
+    }
+
     const customer = req.body?.customer || req.query?.customer;
-    if (!customer) return res.status(400).json({ error: 'missing_customer_id' });
+    if (!customer || !/^cus_[A-Za-z0-9]+$/.test(customer)) {
+      return res.status(400).json({ error: 'invalid_or_missing_customer_id' });
+    }
 
     const session = await stripe.billingPortal.sessions.create({
       customer,
-      return_url: process.env.STRIPE_PORTAL_RETURN_URL,
+      return_url: returnUrl,
     });
 
     return res.json({ url: session.url });
   } catch (err) {
-    console.error('Create Portal session error:', err);
-    return res.status(500).json({ error: 'portal_failed' });
+    const code = err?.statusCode || 500;
+    const detail = err?.raw?.message || err?.message || 'portal_failed';
+    console.error('Create Portal session error:', { code, detail });
+    return res.status(code).json({ error: 'portal_failed', detail });
   }
 });
 
 // Same portal route as GET for easy manual testing in browser
 app.get('/api/stripe/portal', async (req, res) => {
   try {
+    const returnUrl = (process.env.STRIPE_PORTAL_RETURN_URL || '').trim();
+    if (!returnUrl) {
+      return res.status(500).json({ error: 'missing_STRIPE_PORTAL_RETURN_URL' });
+    }
+
     const customer = req.query?.customer;
-    if (!customer) return res.status(400).json({ error: 'missing_customer_id' });
+    if (!customer || !/^cus_[A-Za-z0-9]+$/.test(customer)) {
+      return res.status(400).json({ error: 'invalid_or_missing_customer_id' });
+    }
 
     const session = await stripe.billingPortal.sessions.create({
       customer,
-      return_url: process.env.STRIPE_PORTAL_RETURN_URL,
+      return_url: returnUrl,
     });
 
     return res.json({ url: session.url });
   } catch (err) {
-    console.error('Create Portal session (GET) error:', err);
-    return res.status(500).json({ error: 'portal_failed' });
+    const code = err?.statusCode || 500;
+    const detail = err?.raw?.message || err?.message || 'portal_failed';
+    console.error('Create Portal session (GET) error:', { code, detail });
+    return res.status(code).json({ error: 'portal_failed', detail });
   }
+});
+
+/* Optional Stripe env sanity check (read-only; does not alter behavior) */
+app.get('/api/stripe/env', (_req, res) => {
+  const key = process.env.STRIPE_SECRET_KEY || '';
+  res.json({
+    keyMode: key ? (key.startsWith('sk_test_') ? 'test' : 'live') : 'missing',
+    hasWebhookSecret: !!process.env.STRIPE_WEBHOOK_SECRET,
+    hasPortalReturnUrl: !!process.env.STRIPE_PORTAL_RETURN_URL,
+    hasSuccessUrl: !!process.env.STRIPE_CHECKOUT_SUCCESS_URL,
+    hasCancelUrl: !!process.env.STRIPE_CHECKOUT_CANCEL_URL,
+  });
 });
 
 /* ============================================================================
