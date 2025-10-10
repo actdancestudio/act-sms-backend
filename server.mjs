@@ -151,16 +151,27 @@ app.get('/api/health', (_req, res) => res.json({ ok: true, ts: Date.now() }));
 /* ============================================================================
  * STRIPE: Checkout + Customer Portal routes
  * ==========================================================================*/
-// Create a sandbox Checkout session (in-house POS)
+// Create a checkout session for preset or custom amounts
 app.post('/api/stripe/checkout', async (req, res) => {
   try {
-    const { priceId, quantity = 1, customer, mode = 'payment' } = req.body || {};
-    if (!priceId) return res.status(400).json({ error: 'missing_priceId' });
+    const { priceId, amount, description, quantity = 1, customer, mode = 'payment' } = req.body || {};
+
+    // --- 1️⃣ Either use a predefined Price or a custom amount ---
+    const line_items = priceId
+      ? [{ price: priceId, quantity }]
+      : [{
+          price_data: {
+            currency: 'cad',
+            product_data: { name: description || 'Custom Sale' },
+            unit_amount: Math.round(Number(amount || 0) * 100), // convert dollars→cents
+          },
+          quantity,
+        }];
 
     const session = await stripe.checkout.sessions.create({
-      mode,                                      // 'payment' or 'subscription'
-      customer,                                  // optional existing customer id
-      line_items: [{ price: priceId, quantity }],
+      mode,
+      customer,
+      line_items,
       success_url: process.env.STRIPE_CHECKOUT_SUCCESS_URL + '&session_id={CHECKOUT_SESSION_ID}',
       cancel_url: process.env.STRIPE_CHECKOUT_CANCEL_URL,
       allow_promotion_codes: true,
@@ -169,9 +180,10 @@ app.post('/api/stripe/checkout', async (req, res) => {
     return res.json({ id: session.id, url: session.url });
   } catch (err) {
     console.error('Create Checkout error:', err);
-    return res.status(500).json({ error: 'checkout_failed' });
+    return res.status(500).json({ error: 'checkout_failed', detail: err.message });
   }
 });
+
 
 /* ---- UPDATED: clearer Stripe portal errors without changing success behavior ---- */
 app.post('/api/stripe/portal', async (req, res) => {
