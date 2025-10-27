@@ -110,6 +110,19 @@ app.get('/api/auth/google/debug-config', (req, res) => {
     HAS_TOKENS_JSON: !!process.env.GOOGLE_TOKENS_JSON
   });
 });
+// Minimal status endpoint — used by Integrations panel
+app.get('/api/auth/google/status', (req, res) => {
+  try {
+    const t = JSON.parse(process.env.GOOGLE_TOKENS_JSON || '{}');
+    const connected = !!(t.refresh_token || t.access_token);
+    res.json({
+      connected,
+      message: connected ? 'Google connected' : 'Google Calendar not connected - no tokens found'
+    });
+  } catch {
+    res.json({ connected: false, message: 'Google Calendar not connected - no tokens found' });
+  }
+});
 
 /* ============================================================================
  * STRIPE (SANDBOX-FIRST): webhook BEFORE any JSON body parser
