@@ -100,6 +100,16 @@ app.use(
   })
 );
 app.options('*', cors());
+// Minimal debug endpoint — confirms server sees your Google env
+app.get('/api/auth/google/debug-config', (req, res) => {
+  res.json({
+    GOOGLE_CLIENT_ID: !!process.env.GOOGLE_CLIENT_ID,
+    GOOGLE_CLIENT_SECRET: !!process.env.GOOGLE_CLIENT_SECRET,
+    GOOGLE_REDIRECT_URI: process.env.GOOGLE_REDIRECT_URI || null,
+    GOOGLE_CALENDAR_ID: process.env.GOOGLE_CALENDAR_ID || 'primary',
+    HAS_TOKENS_JSON: !!process.env.GOOGLE_TOKENS_JSON
+  });
+});
 
 /* ============================================================================
  * STRIPE (SANDBOX-FIRST): webhook BEFORE any JSON body parser
