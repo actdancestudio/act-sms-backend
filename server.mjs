@@ -123,6 +123,22 @@ app.get('/api/auth/google/status', (req, res) => {
     res.json({ connected: false, message: 'Google Calendar not connected - no tokens found' });
   }
 });
+// List registered routes (debug)
+app.get('/__routes', (req, res) => {
+  const routes = [];
+  const scan = (stack, prefix = '') => {
+    stack.forEach(layer => {
+      if (layer.route && layer.route.path) {
+        const methods = Object.keys(layer.route.methods).map(m => m.toUpperCase()).join(',');
+        routes.push(`${methods} ${prefix}${layer.route.path}`);
+      } else if (layer.name === 'router' && layer.handle?.stack) {
+        scan(layer.handle.stack, prefix + (layer.regexp?.fast_star ? '' : ''));
+      }
+    });
+  };
+  scan(app._router.stack);
+  res.json(routes.sort());
+});
 
 /* ============================================================================
  * STRIPE (SANDBOX-FIRST): webhook BEFORE any JSON body parser
