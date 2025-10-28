@@ -139,48 +139,6 @@ app.get('/__routes', (req, res) => {
   scan(app._router.stack);
   res.json(routes.sort());
 });
-// ==============================
-// VOICE: forward calls to your cell (and keep backend control)
-// ==============================
-import twilio from 'twilio'; // keep only one import; remove if already imported above
-
-app.post('/voice', (req, res) => {
-  const vr = new twilio.twiml.VoiceResponse();
-
-  // Optional greeting before forwarding
-  vr.say({ voice: 'alice' }, 'Connecting you to ACT Dance Studio. Please hold.');
-
-  // Forward the call to your cell
-  const dial = vr.dial({
-    callerId: process.env.TWILIO_NUMBER,          // shows your Twilio number as caller ID
-    answerOnBridge: true,
-    // Remove "record" if you don't want recordings
-    // record: 'record-from-answer-dual',
-    statusCallback: 'https://act-sms-backend.onrender.com/voice/status',
-    statusCallbackEvent: ['initiated', 'ringing', 'answered', 'completed'],
-    statusCallbackMethod: 'POST'
-  });
-
-  dial.number(process.env.FORWARD_VOICE_TO);
-
-  res.type('text/xml').send(vr.toString());
-});
-
-// Optional: receive call lifecycle updates for logs/analytics
-app.post('/voice/status', (req, res) => {
-  try {
-    console.log('[ACT voice status]', {
-      CallSid: req.body?.CallSid,
-      CallStatus: req.body?.CallStatus,
-      From: req.body?.From,
-      To: req.body?.To,
-      Timestamp: new Date().toISOString()
-    });
-  } catch (e) {
-    console.error('[/voice/status] error', e);
-  }
-  res.status(200).send('OK');
-});
 
 /* ============================================================================
  * STRIPE (SANDBOX-FIRST): webhook BEFORE any JSON body parser
