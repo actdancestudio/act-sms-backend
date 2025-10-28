@@ -146,40 +146,56 @@ app.get('/__routes', (req, res) => {
 app.post('/voice', (req, res) => {
   const vr = new twilio.twiml.VoiceResponse();
 
-  // Optional greeting before forwarding
-  vr.say({ voice: 'alice' }, 'Connecting you to ACT Dance Studio. Please hold.');
+  const mode = (process.env.VOICE_MODE || 'forward').toLowerCase();
 
-  // Forward the call to your cell
+  if (mode === 'ai-first') {
+    // ⛳️ Placeholder: connect to your AI first, then optionally handoff to cell
+    // Example for Twilio Media Streams (replace with your websocket when ready):
+    // vr.say({ voice: 'alice' }, 'Please hold while we connect you.');
+    // const connect = vr.connect();
+    // connect.stream({ url: 'wss://your-ai-stream.example.com/voice' });
+    // After AI finishes, you could <Dial> your cell.
+    vr.say({ voice: 'alice' }, 'AI screening is not configured yet. Forwarding your call now.');
+  }
+
+  if (mode === 'screen') {
+    // Basic IVR screening before forwarding (example)
+    const gather = vr.gather({
+      input: 'speech',
+      action: '/voice/screen',
+      method: 'POST',
+      speechTimeout: 'auto'
+    });
+    gather.say({ voice: 'alice' }, 'Welcome to A C T Dance Studio. Please tell me briefly why you are calling.');
+    return res.type('text/xml').send(vr.toString());
+  }
+
+  // Default: forward to your cell (what you have working now)
+  vr.say({ voice: 'alice' }, 'Connecting you to A C T Dance Studio. Please hold.');
   const dial = vr.dial({
-    callerId: process.env.TWILIO_NUMBER,          // shows your Twilio number as caller ID
+    callerId: process.env.TWILIO_NUMBER,
     answerOnBridge: true,
-    // Remove "record" if you don't want recordings
-    // record: 'record-from-answer-dual',
     statusCallback: 'https://act-sms-backend.onrender.com/voice/status',
     statusCallbackEvent: ['initiated', 'ringing', 'answered', 'completed'],
     statusCallbackMethod: 'POST'
   });
-
   dial.number(process.env.FORWARD_VOICE_TO);
 
   res.type('text/xml').send(vr.toString());
 });
 
-// Optional: receive call lifecycle updates for logs/analytics
-app.post('/voice/status', (req, res) => {
-  try {
-    console.log('[ACT voice status]', {
-      CallSid: req.body?.CallSid,
-      CallStatus: req.body?.CallStatus,
-      From: req.body?.From,
-      To: req.body?.To,
-      Timestamp: new Date().toISOString()
-    });
-  } catch (e) {
-    console.error('[/voice/status] error', e);
-  }
-  res.status(200).send('OK');
+// (Optional) handle the simple "screen" flow handoff
+app.post('/voice/screen', (req, res) => {
+  const vr = new twilio.twiml.VoiceResponse();
+  // You could log req.body.SpeechResult here, score it, etc.
+  const dial = vr.dial({
+    callerId: process.env.TWILIO_NUMBER,
+    answerOnBridge: true
+  });
+  dial.number(process.env.FORWARD_VOICE_TO);
+  res.type('text/xml').send(vr.toString());
 });
+
 
 /* ============================================================================
  * STRIPE (SANDBOX-FIRST): webhook BEFORE any JSON body parser
